@@ -1,0 +1,5 @@
+*.o
+jot
+NOTES.md
+.*.swp
+old
