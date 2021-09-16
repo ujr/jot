@@ -197,6 +197,41 @@ setup_lua(lua_State *L, struct cmdargs *args, const char *exepath)
 }
 
 
+/* Message handler: append a backtrace and log an error */
+static int
+msghandler(lua_State *L)
+{
+  const char *file = "?";
+  int line = 0;
+  const int level = 2;
+
+  const char *err = lua_tostring(L, 1);
+  if (err) {
+    luaL_traceback(L, L, err, level);
+    err = luaL_checkstring(L, 2);
+  }
+  else {
+    /* error object is not a string: try convert via __tostring? */
+    const char *tname = luaL_typename(L, 1);
+    err = lua_pushfstring(L, "(error object is a %s value)", tname);
+    luaL_traceback(L, L, err, level);
+    err = luaL_checkstring(L, 3);
+  }
+
+  lua_Debug debug;
+  if (lua_getstack(L, level, &debug)) {
+    lua_getinfo(L, "Sl", &debug);
+    if (debug.currentline > 0) {
+      file = basename(debug.short_src);
+      line = debug.currentline;
+    }
+  }
+
+  log_log(LOG_ERROR, file, line, "%s", err);
+  return 1;
+}
+
+
 static void
 setup_sandbox(lua_State *L)
 {
@@ -253,6 +288,7 @@ render(lua_State *L, struct cmdargs *args, const char *exepath)
 
   for (size_t i = 0; i < buf_size(initbuf); i++) {
     const char *fn = initbuf[i];
+    log_debug("loading init file %s", fn);
     if ((r = luaL_dofile(L, fn)) != LUA_OK) {
       const char *err = lua_tostring(L, -1);
       if (!err) err = "luaL_dofile() failed";
@@ -290,15 +326,13 @@ render(lua_State *L, struct cmdargs *args, const char *exepath)
 static int
 trials(lua_State *L, struct cmdargs *args, const char *exepath)
 {
-  int r;
   setup_lua(L, args, exepath);
-  r = luaL_dostring(L,
-    "xpcall(function()\n"
-    "  require 'trials'\n"
-    "end, function(err)\n"
-    "  print('Error: ' .. tostring(err))\n"
-    "  print(debug.traceback(nil, 2))\n"
-    "end)\n");
+
+  lua_pushcfunction(L, msghandler);
+  lua_getglobal(L, "require");
+  lua_pushstring(L, "trials");
+  int r = lua_pcall(L, 1, 1, -3);
+
   return exitcode(r);
 }
 

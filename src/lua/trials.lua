@@ -10,6 +10,14 @@ print("package.cpath: " .. package.cpath)
 
 local jot = require "jotlib"
 
+assert(jot.basename("") == "")
+assert(jot.basename("/foo/bar") == "bar");
+assert(jot.basename("\\foo\\bar") == "bar");
+assert(jot.basename("/foo\\bar") == "bar");
+assert(jot.basename("\\foo/bar") == "bar");
+assert(jot.basename("/") == "/");
+assert(jot.basename("\\") == "\\");
+
 jot.log_trace("sample trace msg from Lua")
 jot.log_debug("sample debug msg from Lua")
 jot.log_info("sample info msg from Lua")
@@ -34,3 +42,9 @@ This is Jot {{JOT_VERSION}}, f() = {{f}}, {{o.a}}{{o.b}}{{&o.c}}
 {{/musketeers}}
 ]], _ENV)
 print(s)
+
+for dir in jot.readdir("/home/ujr/doc/src/jot/src") do
+  print(dir)
+end
+
+error("oops, an error")
