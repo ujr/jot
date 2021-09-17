@@ -29,7 +29,8 @@ To jot something down is to quickly take notes, and
 the jotter is the notebook or scratch pad where you do it.
 
 Lua is copyright © 1994–2021 Lua.org, PUC-Rio. MIT license.  
-Pikchr is copyright © 2020 by D. Richard Hipp. Zero-clause BSD license.
+Pikchr is copyright © 2020 by D. Richard Hipp. Zero-clause BSD license.  
+Lustache is copyright © 2012 Olivine Labs. MIT License.
 
 [jekyll]: https://jekyllrb.com/
 [hugo]: https://gohugo.io/

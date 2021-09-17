@@ -53,6 +53,31 @@ jot_basename(lua_State *L)
 }
 
 
+void
+dump_stack(lua_State *L, const char *prefix)
+{
+  int i, top = lua_gettop(L);  /* stack depth */
+  if (!prefix) prefix = "";
+  for (i = 1; i <= top; i++) {
+    int t = lua_type(L, i);
+    switch (t) {
+      case LUA_TBOOLEAN:
+        log_debug("%s%d: %s", prefix, i, lua_toboolean(L, i) ? "true" : "false");
+        break;
+      case LUA_TNUMBER:
+        log_debug("%s%d: %g", prefix, i, lua_tonumber(L, i));
+        break;
+      case LUA_TSTRING:
+        log_debug("%s%d: '%s'", prefix, i, lua_tostring(L, i));
+        break;
+      default:
+        log_debug("%s%d: %s", prefix, i, lua_typename(L, t));
+        break;
+    }
+  }
+}
+
+
 /* Logging */
 
 static int

@@ -8,13 +8,15 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <glob.h>
+
 #include "jot.h"
 #include "jotlib.h"
 #include "log.h"
 #include "cmdargs.h"
 
-static void panic(void);
-#define BUF_ABORT panic();
+static void fatal(void);
+#define BUF_ABORT fatal();
 #include "buf.h"
 
 #include "lua.h"
@@ -27,7 +29,7 @@ static int verbosity = 2;  /* WARN and higher */
 
 
 static void
-panic(void)
+fatal(void)
 {
   if (errno)
     log_panic("Fatal error: %s", strerror(errno));
@@ -100,8 +102,9 @@ usage(const char *fmt, ...)
   "  -t DIR         target: build to DIR (override config)\n"
   "  -d             build draft posts\n");
   fprintf(fp, "Render options:\n"
-  "  -o FILE        render to FILE instead of stdout\n"
-  "  -i FILE.lua    load FILE.lua to init render env\n\n");
+  "  -i FILE.lua    load FILE.lua to init render env\n"
+  "  -p FILE.tmpl   make FILE.tmpl available as {{>FILE.tmpl}}\n"
+  "  -o FILE        render to FILE instead of stdout\n\n");
 }
 
 
@@ -248,17 +251,21 @@ render(lua_State *L, struct cmdargs *args, const char *exepath)
 {
   const char *infn, *outfn = 0;
   const char **initbuf = 0;
+  const char **partbuf = 0;
   bool sandbox = true;
-  int opt, r;
+  int opt, r, top;
 
-  // jot render {-i luafile} [-o outfile] [file] [args]
-  while ((opt = cmdargs_getopt(args, "i:o:qvx")) >= 0) {
+  // jot render {-i luafile} {-p partial} [-o outfile] [file] [args]
+  while ((opt = cmdargs_getopt(args, "i:o:p:qvx")) >= 0) {
     switch (opt) {
       case 'o':
         outfn = args->optarg;
         break;
       case 'i':
         buf_push(initbuf, args->optarg);
+        break;
+      case 'p':
+        buf_push(partbuf, args->optarg);
         break;
       case 'q':
         verbosity = 0;
@@ -297,28 +304,47 @@ render(lua_State *L, struct cmdargs *args, const char *exepath)
     }
   }
 
-  buf_free(initbuf);
+  top = lua_gettop(L);
 
-  r = luaL_dostring(L,
-    "xpcall(function()\n"
-    "  render = require 'render'\n"
-    "end, function(err)\n"
-    "  print('Error: ' .. tostring(err))\n"
-    "  print(debug.traceback(nil, 2))\n"
-    "end)\n");
-
-  if (r == LUA_OK) {
-    lua_getglobal(L, "render");
-    lua_pushstring(L, infn); // pushes nil if infn is null
-    lua_pushstring(L, outfn); // ditto
-    lua_pushnil(L); // partials (but not today)
-    r = lua_pcall(L, 3, 0, 0);
-    if (r == LUA_ERRRUN) {
-      const char *err = lua_tostring(L, 1);
-      log_error("render failed: %s", err);
-    }
+  // This glob partial loading would be easier with Lua;
+  // what is missing is glob() or fnmatch() and dirwalk().
+  glob_t globbuf;
+  globbuf.gl_offs = globbuf.gl_pathc = 0;
+  for (size_t i = 0; i < buf_size(partbuf); i++) {
+    const char *pat = partbuf[i];
+    int flags = GLOB_MARK;
+    if (i > 0) flags |= GLOB_APPEND;
+    glob(pat, flags, 0, &globbuf);
   }
 
+  lua_newtable(L);
+  for (size_t i = 0; i < globbuf.gl_pathc; i++) {
+    log_trace("found partial: %s", globbuf.gl_pathv[i]);
+    lua_pushstring(L, globbuf.gl_pathv[i]);
+    lua_rawseti(L, -2, 1+i);
+  }
+
+  if (globbuf.gl_pathc > 0)
+    globfree(&globbuf);
+
+  buf_free(initbuf);
+  buf_free(partbuf);
+
+  lua_pushcfunction(L, msghandler);
+  lua_getglobal(L, "require");
+  lua_pushstring(L, "render");
+  r = lua_pcall(L, 1, 1, -3);
+  if (r != LUA_OK)
+    goto bail;
+  lua_pushstring(L, infn);
+  lua_pushstring(L, outfn);
+  // stack: outfn infn chunk msghandler table
+  lua_rotate(L, -5, -1); // pull partials table to top
+  r = lua_pcall(L, 3, 0, -5);
+
+bail:
+  dump_stack(L, "stk.");
+  lua_settop(L, top);
   return exitcode(r);
 }
 
@@ -332,6 +358,7 @@ trials(lua_State *L, struct cmdargs *args, const char *exepath)
   lua_getglobal(L, "require");
   lua_pushstring(L, "trials");
   int r = lua_pcall(L, 1, 1, -3);
+  lua_pop(L, 2); /* result and msghandler */
 
   return exitcode(r);
 }

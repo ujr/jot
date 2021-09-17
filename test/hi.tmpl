@@ -1,7 +1,8 @@
---Run from src/: make && ./jot render -i ../test/hi.lua ../test/hi.tmpl
-This is Jot {{JOT_VERSION}} using Lua {{LUA_VERSION}}.
+--Run from src/: make && ./jot render -i ../test/hi.lua -p ../test/greet.tmpl ../test/hi.tmpl
+This is Jot {{JOT_VERSION}} using Lua {{LUA_VERSION}}
 Executable: {{{EXEPATH}}}
 {{#ARGS}}
 - {{.}}
 {{/ARGS}}
-Hi, {{name}}! {{a}} + {{b}} = ?
+From partial: {{> greet.tmpl}}
+Hi, {{name}}! {{a}} + {{b}} = {{c}}
