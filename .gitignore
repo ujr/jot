@@ -1,5 +1,8 @@
 *.o
+*.a
 jot
+lib/**/lua
+lib/**/luac
 NOTES.md
 .*.swp
 .vscode/
