@@ -1,56 +1,27 @@
 
 #include <assert.h>
 #include <errno.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include <dirent.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include "lua.h"
 #include "lauxlib.h"
 
+#include "jot.h"
 #include "jotlib.h"
 #include "log.h"
 #include "pikchr.h"
 
 
-/* Return pointer to one after the last occurrence of a directory
- * separator. Return the argument if there is no directory separator.
- * Special case: the basename of "/" is "/".
- */
-const char *
-basename(const char *path)
-{
-  static const char sep = '/';
-  static const char alt = '\\';
-  register const char *p;
-
-  if (!path) return 0;
-
-  for (p = path; *p; ) {
-    if (*p++ == sep) {
-      if (*p) path = p;
-    }
-  }
-
-  for (p = path; *p; ) {
-    if (*p++ == alt) {
-      if (*p) path = p;
-    }
-  }
-
-  return (char *) path;
-}
-
-
-static int
-jot_basename(lua_State *L)
-{
-  const char *s = lua_tostring(L, 1);
-  s = basename(s);
-  lua_pushstring(L, s);
-  return 1;
-}
+static struct {
+  char dirsep;         /* directory separator */
+} J;
 
 
 void
@@ -75,6 +46,224 @@ dump_stack(lua_State *L, const char *prefix)
         break;
     }
   }
+}
+
+
+/* File System Paths */
+
+
+/* Return pointer to one after the last occurrence of a directory
+ * separator. Return the argument if there is no directory separator.
+ * Special case: the basename of "/" is "/".
+ */
+const char *
+basename(const char *path)
+{
+  static const char sep = '/';
+  static const char alt = '\\';
+  register const char *p;
+
+  if (!path) return 0;
+
+  for (p = path; *p; ) {
+    if (*p++ == sep) {
+      path = p;  /* for POSIX: if (*p) path = p; */
+    }
+  }
+
+  for (p = path; *p; ) {
+    if (*p++ == alt) {
+      path = p;  /* for POSIX: if (*p) path = p; */
+    }
+  }
+
+  return path;
+}
+
+
+static int
+jot_basename(lua_State *L)
+{
+  const char *path = luaL_checkstring(L, 1);
+  assert(path != NULL);
+  lua_pushstring(L, basename(path));
+  return 1;
+}
+
+
+static int
+jot_dirname(lua_State *L)
+{
+  /* Special cases: return "/" if path is "/" and
+   * return "." if path has no "/" or is empty */
+  const char *path = luaL_checkstring(L, 1);
+  assert(path != NULL);
+  size_t len = strlen(path);
+  char sep = J.dirsep;
+
+  /* scan for last dir sep in path: */
+  while (len > 0 && path[len-1] != sep) len--;
+  /* now path[0..len-2] is dirname: */
+  if (len > 0) {
+    if (len > 1) --len;
+    lua_pushlstring(L, path, len);
+    return 1;
+  }
+  /* path is empty or has no sep: */
+  lua_pushstring(L, ".");
+  return 1;
+}
+
+
+static int
+jot_splitpath_iter(lua_State *L)
+{
+  const char *path;
+  size_t len, index, scout;
+
+  path = luaL_checklstring(L, lua_upvalueindex(1), &len);
+  index = luaL_checkinteger(L, lua_upvalueindex(2));
+
+  if (index >= len)
+    return 0;
+
+  /* special case: initial dir sep is returned as such */
+  if (index == 0 && len > 0 && path[index] == J.dirsep) {
+    char dirsep[2] = { J.dirsep, 0 };
+    lua_pushinteger(L, ++index);
+    lua_replace(L, lua_upvalueindex(2));
+    lua_pushstring(L, dirsep);
+    return 1;
+  }
+
+  /* skip separators, then scan and yield next part */
+  while (index < len && path[index] == J.dirsep) ++index;
+  scout = index;
+  while (scout < len && path[scout] != J.dirsep) ++scout;
+  if (scout > index) {
+    lua_pushinteger(L, scout);
+    lua_replace(L, lua_upvalueindex(2));
+    lua_pushlstring(L, path+index, scout-index);
+    return 1;
+  }
+
+  return 0; /* no more parts */
+}
+
+static int
+jot_splitpath(lua_State *L)
+{
+  const char *path = luaL_checkstring(L, 1);
+  assert(path != NULL);
+
+  lua_pushstring(L, path);
+  lua_pushinteger(L, 0);
+  lua_pushcclosure(L, jot_splitpath_iter, 2);
+  return 1;
+}
+
+
+static int
+jot_joinpath(lua_State *L)
+{
+  /* Special cases:
+   * - no args: return "."
+   * - one arg, empty: return "."
+   * - last arg empty: append "/"
+   */
+  luaL_Buffer buf;
+  const char *s;
+  size_t len;
+  int needsep;
+  int i, n = lua_gettop(L);  /* number of args */
+  if (n < 1) {
+    lua_pushstring(L, ".");
+    return 1;
+  }
+  if (n == 1) {
+    s = luaL_checkstring(L, 1);
+    lua_pushstring(L, s && *s ? s : ".");
+    return 1;
+  }
+  luaL_buffinit(L, &buf);
+  for (needsep = 0, i = 1; i <= n; i++) {
+    if (!lua_isstring(L, i)) {
+      lua_pushstring(L, "expect string arguments");
+      return lua_error(L);
+    }
+    s = lua_tostring(L, i);
+    assert(s != NULL);
+    len = strlen(s);
+    if ((i == n) && !*s)
+      luaL_addchar(&buf, J.dirsep);
+    else {
+      /* trim trailing and leading (but not 1st arg) seps */
+      while (len > 0 && s[len-1] == J.dirsep) --len;
+      if (i > 1)
+        while (len > 0 && *s == J.dirsep) ++s, --len;
+      if (len == 0) {
+        /* end with sep if last part is empty */
+        if (i == n) luaL_addchar(&buf, J.dirsep);
+      }
+      else {
+        if (needsep) luaL_addchar(&buf, J.dirsep);
+        luaL_addlstring(&buf, s, len);
+        needsep = 1;
+      }
+    }
+  }
+  luaL_pushresult(&buf);
+  return 1;
+}
+
+
+static int
+jot_normpath(lua_State *L)
+{
+  // - foo/.. => (empty)
+  // - /./    => /
+  // - //*    => /
+  // - /.$    => /
+  // Algo idea:
+  // foreach part of path:
+  // - empty (//): do nothing
+  // - ".": so nothing
+  // - "..": pop (if not empty)
+  // - else: push
+  // join stack from bot to top
+  // if empty, return "."
+  return luaL_error(L, "normpath: not yet implemented");
+}
+
+
+static int
+jot_fullpath(lua_State *L)
+{
+  // normalize path and make absolute
+  return luaL_error(L, "fullpath: not yet implemented");
+}
+
+
+static int
+jot_glob(lua_State *L)
+{
+  // iterator yielding matching paths
+  return luaL_error(L, "glob: not yet implemented");
+}
+
+
+static int
+jot_isdir(lua_State *L)
+{
+  struct stat statbuf;
+  const char *path = luaL_checkstring(L, 1);
+  assert(path != NULL);
+  errno = 0;
+  int r = stat(path, &statbuf);
+  if (r < 0)
+    return luaL_error(L, "cannot stat %s: %s", path, strerror(errno));
+  lua_pushboolean(L, (int) S_ISDIR(statbuf.st_mode));
+  return 1;
 }
 
 
@@ -236,6 +425,21 @@ jot_pikchr(lua_State *L)
 }
 
 
+/* Return directory separator: '\' on Windows and '/' elsewhere.
+ * Get dirsep from package.config, a Lua compile time constant.
+ */
+static char
+getdirsep(lua_State *L)
+{
+  const char *dirsep;
+  lua_getglobal(L, "package");
+  lua_getfield(L, -1, "config");
+  dirsep = lua_tostring(L, -1);
+  lua_pop(L, 2); // package and config
+  return dirsep && *dirsep ? *dirsep : '/';
+}
+
+
 static const struct luaL_Reg jotlib[] = {
   {"log_trace", jot_log_trace},
   {"log_debug", jot_log_debug},
@@ -244,18 +448,34 @@ static const struct luaL_Reg jotlib[] = {
   {"log_error", jot_log_error},
   {"log_panic", jot_log_panic},
   {"basename",  jot_basename},
+  {"dirname",   jot_dirname},
+  {"splitpath", jot_splitpath},
+  {"joinpath",  jot_joinpath},
+  {"normpath",  jot_normpath},
+  {"fullpath",  jot_fullpath},
   {"readdir",   jot_readdir},
+  {"isdir",     jot_isdir},
+  {"glob",      jot_glob},
   {"pikchr",    jot_pikchr},
   {0, 0}
 };
 
+
 int
 luaopen_jotlib(lua_State *L)
 {
+  J.dirsep = getdirsep(L);
+  log_trace("using '%c' as dirsep", J.dirsep);
+
   luaL_newmetatable(L, JOTLIB_READDIR_REGKEY);
   lua_pushcfunction(L, jot_readdir_gc);
   lua_setfield(L, -2, "__gc");
+  lua_pop(L, 1);
 
   luaL_newlib(L, jotlib);
+
+  lua_pushstring(L, VERSION);
+  lua_setfield(L, -2, "VERSION");
+
   return 1;
 }

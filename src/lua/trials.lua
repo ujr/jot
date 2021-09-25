@@ -9,14 +9,7 @@ print("package.path:  " .. package.path)
 print("package.cpath: " .. package.cpath)
 
 local jot = require "jotlib"
-
-assert(jot.basename("") == "")
-assert(jot.basename("/foo/bar") == "bar");
-assert(jot.basename("\\foo\\bar") == "bar");
-assert(jot.basename("/foo\\bar") == "bar");
-assert(jot.basename("\\foo/bar") == "bar");
-assert(jot.basename("/") == "/");
-assert(jot.basename("\\") == "\\");
+print("jot.VERSION = " .. jot.VERSION)
 
 jot.log_trace("sample trace msg from Lua")
 jot.log_debug("sample debug msg from Lua")

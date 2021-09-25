@@ -88,6 +88,7 @@ usage(const char *fmt, ...)
   "  new <path>     create initial site structure in <path>\n"
   "  build [path]   build or rebuild site in path (or .)\n"
   "  render [file]  render file (or stdin) to stdout\n"
+  "  checks         run some self checks and quit\n"
   "  trials         experimental code while in dev\n"
   "  help           show this help text\n");
   fprintf(fp, "General options:\n"
@@ -350,6 +351,21 @@ bail:
 
 
 static int
+checks(lua_State *L, struct cmdargs *args, const char *exepath)
+{
+  setup_lua(L, args, exepath);
+
+  lua_pushcfunction(L, msghandler);
+  lua_getglobal(L, "require");
+  lua_pushstring(L, "checks");
+  int r = lua_pcall(L, 1, 1, -3);
+  lua_pop(L, 2); /* result and msghandler */
+
+  return exitcode(r);
+}
+
+
+static int
 trials(lua_State *L, struct cmdargs *args, const char *exepath)
 {
   setup_lua(L, args, exepath);
@@ -444,11 +460,13 @@ main(int argc, char **argv)
     log_error("command not yet implemented: %s", cmd);
     r = FAILSOFT;
   }
-  // TODO nice to have: shell
   else if (streq(cmd, "help")) {
     identify();
     usage(0);
     r = SUCCESS;
+  }
+  else if (streq(cmd, "check") || streq(cmd, "checks")) {
+    r = checks(L, &args, exepath);
   }
   else if (streq(cmd, "trial") || streq(cmd, "trials")) {
     r = trials(L, &args, exepath);
