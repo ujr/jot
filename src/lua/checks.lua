@@ -68,6 +68,20 @@ assert(jot.joinpath("", "foo", "") == "foo/")
 assert(jot.joinpath("inner", "", "empty", "", "args") == "inner/empty/args")
 
 
+jot.log_info("Checking jot.normpath()")
+assert(jot.normpath("foo") == "foo")
+assert(jot.normpath("/foo") == "/foo")
+assert(jot.normpath("//foo//bar//") == "/foo/bar")
+assert(jot.normpath("foo/..") == ".")
+assert(jot.normpath("..///.././..//foo//./bar/../bazaar/.") == "foo/bazaar")
+assert(jot.normpath(".") == ".")
+assert(jot.normpath("..") == ".")
+assert(jot.normpath("...") == "...")
+assert(jot.normpath("/") == "/")
+assert(jot.normpath("/////") == "/")
+assert(jot.normpath("") == ".")
+
+
 jot.log_info("Checking miscellaneous functions")
 assert(jot.isdir("."))
 assert(jot.isdir(".."))

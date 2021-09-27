@@ -220,26 +220,64 @@ jot_joinpath(lua_State *L)
 static int
 jot_normpath(lua_State *L)
 {
-  // - foo/.. => (empty)
-  // - /./    => /
-  // - //*    => /
-  // - /.$    => /
-  // Algo idea:
-  // foreach part of path:
-  // - empty (//): do nothing
-  // - ".": so nothing
-  // - "..": pop (if not empty)
-  // - else: push
-  // join stack from bot to top
-  // if empty, return "."
-  return luaL_error(L, "normpath: not yet implemented");
+  luaL_Buffer b;
+  const char *path;
+  size_t len, idx;
+  int stk, i;
+
+  /* implementation sketch: use a table as a stack; for each
+   * part: if "." skip, if ".." pop, else push; concat stack */
+
+  path = luaL_checklstring(L, 1, 0);
+  assert(path != NULL);
+  len = strlen(path); /* up to first \0 only */
+
+  luaL_buffinit(L, &b);
+  if (len > 0 && path[0] == J.dirsep) {
+    /* special case: initial dir sep */
+    luaL_addchar(&b, J.dirsep);
+  }
+
+  lua_newtable(L);
+  for (stk=0, idx=0; idx < len;) {
+    while (idx < len && path[idx] == J.dirsep) ++idx;
+    size_t base = idx;
+    while (idx < len && path[idx] != J.dirsep) ++idx;
+    if (idx == base) break;
+    if (strncmp(path+base, ".", idx-base) == 0)
+      continue;
+    if (strncmp(path+base, "..", idx-base) == 0) {
+      if (stk > 0) {
+        lua_pushnil(L);
+        lua_rawseti(L, -2, stk--); /* pop */
+      }
+      continue;
+    }
+    lua_pushlstring(L, path+base, idx-base);
+    lua_rawseti(L, -2, ++stk); /* push */
+  }
+
+  for (i = 1; i <= stk; i++) {
+    if (i > 1)
+      luaL_addchar(&b, J.dirsep);;
+    lua_rawgeti(L, -1, i);
+    luaL_addvalue(&b);
+  }
+
+  if (luaL_bufflen(&b) == 0)
+    luaL_addchar(&b, '.');
+
+  lua_pop(L, 1); /* the table */
+  luaL_pushresult(&b);
+  return 1;
 }
 
 
 static int
 jot_fullpath(lua_State *L)
 {
-  // normalize path and make absolute
+  // normalize path and make absolute:
+  // return join(getcwd(), norm(path))
   return luaL_error(L, "fullpath: not yet implemented");
 }
 
