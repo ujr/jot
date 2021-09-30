@@ -36,6 +36,13 @@ jot_error(lua_State *L, const char *fmt, ...)
 }
 
 
+static int
+error_readonly(lua_State  *L)
+{
+  return jot_error(L, "cannot update readonly table");
+}
+
+
 void
 dump_stack(lua_State *L, const char *prefix)
 {
@@ -285,6 +292,24 @@ jot_normpath(lua_State *L)
 }
 
 
+static const struct luaL_Reg pathlib[] = {
+  {"basename", jot_basename},
+  {"dirname",  jot_dirname},
+  {"split",    jot_splitpath},
+  {"join",     jot_joinpath},
+  {"norm",     jot_normpath},
+  {0, 0}
+};
+
+
+static int
+luaopen_jotlib_path(lua_State *L)
+{
+  luaL_newlib(L, pathlib);
+  return 1;
+}
+
+
 /* File System Operations */
 
 
@@ -395,6 +420,32 @@ static int
 jot_log_panic(lua_State *L)
 {
   return jot_log(L, LOG_PANIC);
+}
+
+
+static const struct luaL_Reg loglib[] = {
+  {"trace", jot_log_trace},
+  {"debug", jot_log_debug},
+  {"info",  jot_log_info},
+  {"warn",  jot_log_warn},
+  {"error", jot_log_error},
+  {"panic", jot_log_panic},
+  {0, 0}
+};
+
+
+static int
+luaopen_jotlib_log(lua_State *L)
+{
+  /* just for curiosity: make it readonly */
+  lua_newtable(L);  /* proxy table */
+  lua_newtable(L);  /* meta table */
+  luaL_newlib(L, loglib);
+  lua_setfield(L, -2, "__index");
+  lua_pushcfunction(L, error_readonly);
+  lua_setfield(L, -2, "__newindex");
+  lua_setmetatable(L, -2);
+  return 1;
 }
 
 
@@ -544,6 +595,12 @@ luaopen_jotlib(lua_State *L)
   lua_pop(L, 1);
 
   luaL_newlib(L, jotlib);
+
+  luaopen_jotlib_log(L);
+  lua_setfield(L, -2, "log");
+
+  luaopen_jotlib_path(L);
+  lua_setfield(L, -2, "path");
 
   lua_pushstring(L, VERSION);
   lua_setfield(L, -2, "VERSION");

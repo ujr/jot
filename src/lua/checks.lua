@@ -1,51 +1,53 @@
 -- self checks
 
 local jot = require "jotlib"
+local path = jot.path
+local log = jot.log
 
 
-jot.log_info("Checking jot.basename()")
-assert(jot.basename("") == "")
-assert(jot.basename(".") == ".")
-assert(jot.basename("..") == "..")
-assert(jot.basename("/") == ""); -- POSIX: "/"
-assert(jot.basename("\\") == "");
-assert(jot.basename("///") == "")
-assert(jot.basename("file.txt") == "file.txt")
-assert(jot.basename("/foo/bar") == "bar");
-assert(jot.basename("\\foo\\bar") == "bar");
-assert(jot.basename("/foo\\bar") == "bar");
-assert(jot.basename("\\foo/bar") == "bar");
-assert(jot.basename("foo/bar/") == ""); -- POSIX: "bar" (GNU: empty)
+log.info("Checking path.basename()")
+assert(path.basename("") == "")
+assert(path.basename(".") == ".")
+assert(path.basename("..") == "..")
+assert(path.basename("/") == ""); -- POSIX: "/"
+assert(path.basename("\\") == "");
+assert(path.basename("///") == "")
+assert(path.basename("file.txt") == "file.txt")
+assert(path.basename("/foo/bar") == "bar");
+assert(path.basename("\\foo\\bar") == "bar");
+assert(path.basename("/foo\\bar") == "bar");
+assert(path.basename("\\foo/bar") == "bar");
+assert(path.basename("foo/bar/") == ""); -- POSIX: "bar" (GNU: empty)
 
 
-jot.log_info("Checking jot.dirname()")
-assert(jot.dirname("") == ".")
-assert(jot.dirname(".") == ".")
-assert(jot.dirname("..") == ".")
-assert(jot.dirname("/") == "/")
-assert(jot.dirname("./") == ".")
-assert(jot.dirname("file.txt") == ".")
-assert(jot.dirname("/foo/bar") == "/foo")
-assert(jot.dirname("foo/bar") == "foo")
-assert(jot.dirname("/foo/") == "/foo")
-assert(jot.dirname("/foo") == "/")
-assert(jot.dirname("foo/") == "foo")
+log.info("Checking path.dirname()")
+assert(path.dirname("") == ".")
+assert(path.dirname(".") == ".")
+assert(path.dirname("..") == ".")
+assert(path.dirname("./") == ".")
+assert(path.dirname("/") == "/")
+assert(path.dirname("file.txt") == ".")
+assert(path.dirname("/foo/bar") == "/foo")
+assert(path.dirname("foo/bar") == "foo")
+assert(path.dirname("/foo/") == "/foo")
+assert(path.dirname("/foo") == "/")
+assert(path.dirname("foo/") == "foo")
 
 
-jot.log_info("Checking jot.splitpath()")
-iter = jot.splitpath("foo/bar//baz/.")
+log.info("Checking path.split()")
+iter = path.split("foo/bar//baz/.")
 assert(iter() == "foo")
 assert(iter() == "bar")
 assert(iter() == "baz")
 assert(iter() == ".")
 assert(iter() == nil)
 assert(iter() == nil) -- idempotent at end
-iter = jot.splitpath("")
+iter = path.split("")
 assert(iter() == nil)
-iter = jot.splitpath("///")
+iter = path.split("///")
 assert(iter() == "/")
 assert(iter() == nil)
-iter = jot.splitpath("./foo///bar//..//baz//")
+iter = path.split("./foo///bar//..//baz//")
 assert(iter() == ".")
 assert(iter() == "foo")
 assert(iter() == "bar")
@@ -54,35 +56,35 @@ assert(iter() == "baz")
 assert(iter() == nil)
 
 
-jot.log_info("Checking jot.joinpath()")
-assert(jot.joinpath() == ".")
-assert(jot.joinpath("") == ".")
-assert(jot.joinpath("foo") == "foo")
-assert(jot.joinpath("foo", "bar") == "foo/bar")
-assert(jot.joinpath("foo/", "bar") == "foo/bar")
-assert(jot.joinpath("foo", "/bar") == "foo/bar")
-assert(jot.joinpath("foo/", "/bar") == "foo/bar")
-assert(jot.joinpath("/", "/", "/") == "/")
-assert(jot.joinpath("/foo/", "..", ".", "/bar/") == "/foo/.././bar")
-assert(jot.joinpath("", "foo", "") == "foo/")
-assert(jot.joinpath("inner", "", "empty", "", "args") == "inner/empty/args")
+log.info("Checking path.join()")
+assert(path.join() == ".")
+assert(path.join("") == ".")
+assert(path.join("foo") == "foo")
+assert(path.join("foo", "bar") == "foo/bar")
+assert(path.join("foo/", "bar") == "foo/bar")
+assert(path.join("foo", "/bar") == "foo/bar")
+assert(path.join("foo/", "/bar") == "foo/bar")
+assert(path.join("/", "/", "/") == "/")
+assert(path.join("/foo/", "..", ".", "/bar/") == "/foo/.././bar")
+assert(path.join("", "foo", "") == "foo/")
+assert(path.join("inner", "", "empty", "", "args") == "inner/empty/args")
 
 
-jot.log_info("Checking jot.normpath()")
-assert(jot.normpath("foo") == "foo")
-assert(jot.normpath("/foo") == "/foo")
-assert(jot.normpath("//foo//bar//") == "/foo/bar")
-assert(jot.normpath("foo/..") == ".")
-assert(jot.normpath("..///.././..//foo//./bar/../bazaar/.") == "foo/bazaar")
-assert(jot.normpath(".") == ".")
-assert(jot.normpath("..") == ".")
-assert(jot.normpath("...") == "...")
-assert(jot.normpath("/") == "/")
-assert(jot.normpath("/////") == "/")
-assert(jot.normpath("") == ".")
+log.info("Checking path.norm()")
+assert(path.norm("foo") == "foo")
+assert(path.norm("/foo") == "/foo")
+assert(path.norm("//foo//bar//") == "/foo/bar")
+assert(path.norm("foo/..") == ".")
+assert(path.norm("..///.././..//foo//./bar/../bazaar/.") == "foo/bazaar")
+assert(path.norm(".") == ".")
+assert(path.norm("..") == ".")
+assert(path.norm("...") == "...")
+assert(path.norm("/") == "/")
+assert(path.norm("/////") == "/")
+assert(path.norm("") == ".")
 
 
-jot.log_info("Checking miscellaneous functions")
+log.info("Checking miscellaneous functions")
 assert(jot.isdir("."))
 assert(jot.isdir(".."))
 assert(not jot.isdir(EXEPATH))
@@ -92,4 +94,4 @@ assert(type(s) == "string")
 assert(#s > 0)
 
 
-jot.log_info("OK");
+log.info("OK");
