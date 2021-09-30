@@ -1,22 +1,20 @@
 print("Jot version: " .. JOT_VERSION)
 print("Lua version: " .. LUA_VERSION)
 print("Executable:  " .. EXEPATH)
-print("Arguments:   " .. tostring(#ARGS))
-for i, v in ipairs(ARGS) do
-  print("  arg" .. tostring(i) .. ": " .. tostring(v))
-end
 print("package.path:  " .. package.path)
 print("package.cpath: " .. package.cpath)
 
 local jot = require "jotlib"
+local log, path = jot.log, jot.path
+
 print("jot.VERSION = " .. jot.VERSION)
 
-jot.log_trace("sample trace msg from Lua")
-jot.log_debug("sample debug msg from Lua")
-jot.log_info("sample info msg from Lua")
-jot.log_warn("sample warn msg from Lua")
-jot.log_error("sample error msg from Lua")
-jot.log_panic("sample panic msg from Lua")
+log.trace("sample trace msg from Lua")
+log.debug("sample debug msg from Lua")
+log.info("sample info msg from Lua")
+log.warn("sample warn msg from Lua")
+log.error("sample error msg from Lua")
+log.panic("sample panic msg from Lua")
 
 local svg = jot.pikchr("arrow; box \"Hello\" \"World\"", true);
 
@@ -40,4 +38,7 @@ for dir in jot.readdir("/home/ujr/doc/src/jot/src") do
   print(dir)
 end
 
-error("oops, an error")
+print("cwd: " .. jot.getcwd())
+print(path.norm(path.join("./", "good", ".", "bye", "/.")))
+--log.panic = "log is a readonly table"
+--error("oops, an error")

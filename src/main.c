@@ -62,14 +62,17 @@ streq(const char *s, const char *t)
 }
 
 
-static void
+static int
 identify(void)
 {
-  printf("This is %s version %s\n", PRODUCT, VERSION);
+  printf("This is %s version %s using Lua %s.%s.%s\n",
+  PRODUCT, VERSION,
+  LUA_VERSION_MAJOR, LUA_VERSION_MINOR, LUA_VERSION_RELEASE);
+  return SUCCESS;
 }
 
 
-static void
+static int
 usage(const char *fmt, ...)
 {
   FILE *fp = fmt ? stderr : stdout;
@@ -82,30 +85,42 @@ usage(const char *fmt, ...)
     fprintf(fp, "\n");
     va_end(ap);
   }
+  else {
+    fprintf(fp, "\nThis is %s version %s,\n"
+    "the static site generator for the unpretentious,\n"
+    "using Lua scripting and mustache-like templates.\n\n",
+    PRODUCT, VERSION);
+  }
 
   fprintf(fp, "Usage: %s [opts] <cmd> [opts] [args]\n", me);
-  fprintf(fp, "Commands:\n"
-  "  new <path>     create initial site structure in <path>\n"
-  "  build [path]   build or rebuild site in path (or .)\n"
-  "  render [file]  render file (or stdin) to stdout\n"
-  "  checks         run some self checks and quit\n"
-  "  trials         experimental code while in dev\n"
-  "  help           show this help text\n");
-  fprintf(fp, "General options:\n"
-  "  -v             increase verbosity\n"
-  "  -q             quiet (log only errors)\n"
-  "  -x             allow unsafe functions (io.* etc.)\n"
-  "  -h             show this help and quit\n"
-  "  -V             show version and quit\n");
-  fprintf(fp, "Build options:\n"
-  "  -c FILE        override config file location\n"
-  "  -s DIR         source: build from DIR (override config)\n"
-  "  -t DIR         target: build to DIR (override config)\n"
-  "  -d             build draft posts\n");
-  fprintf(fp, "Render options:\n"
-  "  -i FILE.lua    load FILE.lua to init render env\n"
-  "  -p FILE.tmpl   make FILE.tmpl available as {{>FILE.tmpl}}\n"
-  "  -o FILE        render to FILE instead of stdout\n\n");
+  if (fmt)
+    fprintf(fp, "Run %s with option -h for detailed usage.\n", me);
+  else {
+    fprintf(fp, "\nCommands:\n"
+    "  new <path>     create initial site structure in <path>\n"
+    "  build [path]   build or rebuild site in path (or .)\n"
+    "  render [file]  render file (or stdin) to stdout\n"
+    "  checks         run some self checks and quit\n"
+    "  trials         experimental code while in dev\n"
+    "  help           show this help text\n"
+    "\nGeneral options:\n"
+    "  -v             increase verbosity\n"
+    "  -q             quiet (log only errors)\n"
+    "  -x             allow unsafe functions (io.* etc.)\n"
+    "  -h             show this help and quit\n"
+    "  -V             show version and quit\n"
+    "\nBuild options:\n"
+    "  -c FILE        override config file location\n"
+    "  -s DIR         source: build from DIR (override config)\n"
+    "  -t DIR         target: build to DIR (override config)\n"
+    "  -d             build draft posts\n"
+    "\nRender options:\n"
+    "  -i FILE.lua    load FILE.lua to init render env\n"
+    "  -p FILE.tmpl   make FILE.tmpl available as {{>FILE.tmpl}}\n"
+    "  -o FILE        render to FILE instead of stdout\n\n");
+  }
+
+  return fmt ? FAILHARD : SUCCESS;
 }
 
 
@@ -149,15 +164,18 @@ check_lua_version(lua_State *L)
 }
 
 
-static void
-setup_lua(lua_State *L, struct cmdargs *args, const char *exepath)
+static int
+setup_lua(lua_State *L, const char *exepath)
 {
-  const char *arg;
-  int i, r;
-
   assert(L != NULL);
-  assert(args != NULL);
-  assert(exepath != NULL);
+
+  log_trace("checking Lua app/core versions");
+  lua_pushcfunction(L, check_lua_version);
+  if (lua_pcall(L, 0, 0, 0) != LUA_OK) {
+    const char *err = lua_tostring(L, -1);
+    log_panic("cannot initialize Lua: %s", err);
+    return FAILHARD;
+  }
 
   luaL_openlibs(L); // tentative: open all standard libraries
 
@@ -167,23 +185,28 @@ setup_lua(lua_State *L, struct cmdargs *args, const char *exepath)
   lua_pushfstring(L, "%s.%s.%s", LUA_VERSION_MAJOR, LUA_VERSION_MINOR, LUA_VERSION_RELEASE);
   lua_setglobal(L, "LUA_VERSION");
 
-  lua_pushstring(L, exepath);
-  lua_setglobal(L, "EXEPATH");
-
-  lua_newtable(L);
-  for (i = 1; (arg = cmdargs_getarg(args)); i++) {
-    lua_pushstring(L, arg);
-    lua_rawseti(L, -2, i);
+  if (exepath) {
+    lua_pushstring(L, exepath);
+    lua_setglobal(L, "EXEPATH");
   }
-  lua_setglobal(L, "ARGS");
 
-  r = luaL_dostring(L,
+  // lua_newtable(L);
+  // for (i = 1; (arg = cmdargs_getarg(args)); i++) {
+  //   lua_pushstring(L, arg);
+  //   lua_rawseti(L, -2, i);
+  // }
+  // lua_setglobal(L, "ARGS");
+
+  int r = luaL_dostring(L,
     "pcall(function()\n"
     "  EXEDIR = string.match(EXEPATH, \"^(.+)[/\\\\].*$\")\n"
     "  package.path = EXEDIR .. '/lua/?.lua;' .. EXEDIR .. '/lua/?/init.lua'\n"
     "  package.cpath = EXEDIR .. '/lua/?.so'\n"
     "end)");
-  if (r) log_error("error setting package.path per Lua");
+  if (r) {
+    log_error("error setting package.path per Lua");
+    return FAILHARD;
+  }
 
   // Preload jotlib, so Lua code can `require "jotlib"`
   // (note that luaL_requiref() does require, not only preload)
@@ -198,6 +221,8 @@ setup_lua(lua_State *L, struct cmdargs *args, const char *exepath)
   // _G.site.config.*   (from _config.lua file)
   // _G.site.{data,posts,layouts,partials,etc.}
   // Shall be read-only for page templates!
+
+  return SUCCESS;
 }
 
 
@@ -236,6 +261,31 @@ msghandler(lua_State *L)
 }
 
 
+static int
+load_lua(lua_State *L, const char *module_name, int force_reload)
+{
+  assert(module_name != NULL);
+
+  if (force_reload) {
+    /* package.loaded[module_name] = nil */
+    lua_getglobal(L, "package");
+    lua_getfield(L, -1, "loaded");
+    lua_pushnil(L);
+    lua_setfield(L, -2, module_name);
+    lua_pop(L, 2);
+  }
+
+  /* require "module_name" */
+  lua_pushcfunction(L, msghandler);
+  lua_getglobal(L, "require");
+  lua_pushstring(L, module_name);
+  int r = lua_pcall(L, 1, 1, -3);
+  lua_remove(L, -2); /* pop msghandler; keep result */
+
+  return r;
+}
+
+
 static void
 setup_sandbox(lua_State *L)
 {
@@ -248,7 +298,7 @@ setup_sandbox(lua_State *L)
 
 
 static int
-render(lua_State *L, struct cmdargs *args, const char *exepath)
+render(lua_State *L, struct cmdargs *args)
 {
   const char *infn, *outfn = 0;
   const char **initbuf = 0;
@@ -290,7 +340,6 @@ render(lua_State *L, struct cmdargs *args, const char *exepath)
 
   infn = cmdargs_getarg(args);
 
-  setup_lua(L, args, exepath);
   if (sandbox) setup_sandbox(L);
   else log_warn("sandbox disabled by option -x");
 
@@ -351,30 +400,46 @@ bail:
 
 
 static int
-checks(lua_State *L, struct cmdargs *args, const char *exepath)
+checks(lua_State *L, struct cmdargs *args)
 {
-  setup_lua(L, args, exepath);
+  int opt;
+  while ((opt = cmdargs_getopt(args, "qv")) >= 0) {
+    switch (opt) {
+      case 'q': verbosity = 0; break;
+      case 'v': verbosity += 1; break;
+      default:
+        return usage("invalid option -%c", args->optopt);
+    }
+  }
 
-  lua_pushcfunction(L, msghandler);
-  lua_getglobal(L, "require");
-  lua_pushstring(L, "checks");
-  int r = lua_pcall(L, 1, 1, -3);
-  lua_pop(L, 2); /* result and msghandler */
+  set_log_level(verbosity);
+
+  const int force = 1;
+  int r = load_lua(L, "checks", force);
+  lua_pop(L, 1);
 
   return exitcode(r);
 }
 
 
 static int
-trials(lua_State *L, struct cmdargs *args, const char *exepath)
+trials(lua_State *L, struct cmdargs *args)
 {
-  setup_lua(L, args, exepath);
+  int opt;
+  while ((opt = cmdargs_getopt(args, "qv")) >= 0) {
+    switch (opt) {
+      case 'q': verbosity = 0; break;
+      case 'v': verbosity += 1; break;
+      default:
+        return usage("invalid option -%c", args->optopt);
+    }
+  }
 
-  lua_pushcfunction(L, msghandler);
-  lua_getglobal(L, "require");
-  lua_pushstring(L, "trials");
-  int r = lua_pcall(L, 1, 1, -3);
-  lua_pop(L, 2); /* result and msghandler */
+  set_log_level(verbosity);
+
+  const int force = 1;
+  int r = load_lua(L, "trials", force);
+  lua_pop(L, 1);
 
   return exitcode(r);
 }
@@ -397,9 +462,7 @@ main(int argc, char **argv)
   while ((opt = cmdargs_getopt(&args, "c:do:s:t:hqvVx")) >= 0) {
     switch (opt) {
       case 'h':
-        identify();
-        usage(0);
-        return SUCCESS;
+        return usage(0);
       case 'q':
         verbosity = 0;
         break;
@@ -407,14 +470,11 @@ main(int argc, char **argv)
         verbosity += 1;
         break;
       case 'V':
-        identify();
-        return SUCCESS;
+        return identify();
       case ':':
-        usage("option -%c requires an argument", args.optopt);
-        return FAILHARD;
+        return usage("option -%c requires an argument", args.optopt);
       case '?':
-        usage("invalid option: -%c", args.optopt);
-        return FAILHARD;
+        return usage("invalid option: -%c", args.optopt);
       default:
         fprintf(stderr, "%s: not yet implemented: -%c\n", me, args.optopt);
         return FAILSOFT;
@@ -441,41 +501,34 @@ main(int argc, char **argv)
     return FAILSOFT;
   }
 
-  log_trace("checking Lua app/core versions");
-  lua_pushcfunction(L, check_lua_version);
-  if (lua_pcall(L, 0, 0, 0) != LUA_OK) {
-    const char *err = lua_tostring(L, -1);
-    log_panic("cannot initialize Lua: %s", err);
-    return FAILHARD;
-  }
+  r = setup_lua(L, exepath);
+  if (r) goto cleanup;
 
   if (streq(cmd, "new")) {
     log_error("command not yet implemented: %s", cmd);
     r = FAILSOFT;
   }
   else if (streq(cmd, "render")) {
-    r = render(L, &args, exepath);
+    r = render(L, &args);
   }
   else if (streq(cmd, "build")) {
     log_error("command not yet implemented: %s", cmd);
     r = FAILSOFT;
   }
   else if (streq(cmd, "help")) {
-    identify();
-    usage(0);
-    r = SUCCESS;
+    r = usage(0);
   }
   else if (streq(cmd, "check") || streq(cmd, "checks")) {
-    r = checks(L, &args, exepath);
+    r = checks(L, &args);
   }
   else if (streq(cmd, "trial") || streq(cmd, "trials")) {
-    r = trials(L, &args, exepath);
+    r = trials(L, &args);
   }
   else {
-    usage("invalid command: %s", cmd);
-    r = FAILHARD;
+    r = usage("invalid command: %s", cmd);
   }
 
+cleanup:
   log_trace("closing Lua state");
   lua_close(L);
 
