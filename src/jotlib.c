@@ -1,6 +1,7 @@
 
 #include <assert.h>
 #include <errno.h>
+#include <stdarg.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,6 +23,17 @@
 static struct {
   char dirsep;         /* directory separator */
 } J;
+
+
+static int
+jot_error(lua_State *L, const char *fmt, ...)
+{
+  va_list ap;
+  va_start(ap, fmt);
+  lua_pushvfstring(L, fmt, ap);
+  va_end(ap);
+  return lua_error(L);
+}
 
 
 void
@@ -245,7 +257,7 @@ jot_normpath(lua_State *L)
     while (idx < len && path[idx] != J.dirsep) ++idx;
     if (idx == base) break;
     if (strncmp(path+base, ".", idx-base) == 0)
-      continue;
+      continue; /* skip */
     if (strncmp(path+base, "..", idx-base) == 0) {
       if (stk > 0) {
         lua_pushnil(L);
@@ -273,20 +285,41 @@ jot_normpath(lua_State *L)
 }
 
 
-static int
-jot_fullpath(lua_State *L)
-{
-  // normalize path and make absolute:
-  // return join(getcwd(), norm(path))
-  return luaL_error(L, "fullpath: not yet implemented");
-}
+/* File System Operations */
 
 
 static int
 jot_glob(lua_State *L)
 {
   // iterator yielding matching paths
-  return luaL_error(L, "glob: not yet implemented");
+  return jot_error(L, "glob: not yet implemented");
+}
+
+
+static int
+jot_getcwd(lua_State *L)
+{
+  char *buf = 0;
+  size_t len;
+  if (!lua_isnone(L, 1))
+    return jot_error(L, "expect no arguments");
+  for (len=512; ; len *= 2) {
+    char *p = realloc(buf, len);
+    if (!p) {
+      if (buf) free(buf);
+      return jot_error(L, "out of memory");
+    }
+    if (getcwd((buf=p), len)) {
+      lua_pushstring(L, buf);
+      free(buf);
+      break;
+    }
+    if (errno != ERANGE) {
+      if (buf) free(buf);
+      return jot_error(L, "cannot getcwd: %s", strerror(errno));
+    }
+  }
+  return 1;
 }
 
 
@@ -299,7 +332,7 @@ jot_isdir(lua_State *L)
   errno = 0;
   int r = stat(path, &statbuf);
   if (r < 0)
-    return luaL_error(L, "cannot stat %s: %s", path, strerror(errno));
+    return jot_error(L, "cannot stat %s: %s", path, strerror(errno));
   lua_pushboolean(L, (int) S_ISDIR(statbuf.st_mode));
   return 1;
 }
@@ -381,7 +414,7 @@ jot_readdir_iter(lua_State *L)
     return 1;
   }
   if (errno) {
-    luaL_error(L, "error reading directory: %s", strerror(errno));
+    jot_error(L, "error reading directory: %s", strerror(errno));
   }
   return 0; /* no more entries */
 }
@@ -412,7 +445,7 @@ jot_readdir(lua_State *L)
 
   *dirp = opendir(path);
   if (!*dirp) {
-    return luaL_error(L, "cannot open %s: %s", path, strerror(errno));
+    return jot_error(L, "cannot open %s: %s", path, strerror(errno));
   }
 
   /* push iterator function (its upvalue, the DIR, is alreay on stack) */
@@ -490,8 +523,8 @@ static const struct luaL_Reg jotlib[] = {
   {"splitpath", jot_splitpath},
   {"joinpath",  jot_joinpath},
   {"normpath",  jot_normpath},
-  {"fullpath",  jot_fullpath},
   {"readdir",   jot_readdir},
+  {"getcwd",    jot_getcwd},
   {"isdir",     jot_isdir},
   {"glob",      jot_glob},
   {"pikchr",    jot_pikchr},

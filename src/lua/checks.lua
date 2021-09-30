@@ -87,6 +87,9 @@ assert(jot.isdir("."))
 assert(jot.isdir(".."))
 assert(not jot.isdir(EXEPATH))
 assert(jot.isdir(jot.dirname(EXEPATH)))
+local s = jot.getcwd()
+assert(type(s) == "string")
+assert(#s > 0)
 
 
 jot.log_info("OK");
