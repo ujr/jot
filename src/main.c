@@ -53,15 +53,6 @@ get_exe_path(char *buf, int size)
 }
 
 
-static bool
-streq(const char *s, const char *t)
-{
-  if (!s && !t) return true;
-  if (!s || !t) return false;
-  return strcmp(s, t) == 0;
-}
-
-
 static int
 identify(void)
 {

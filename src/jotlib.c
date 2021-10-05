@@ -2,6 +2,7 @@
 #include <assert.h>
 #include <errno.h>
 #include <stdarg.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
@@ -65,6 +66,15 @@ dump_stack(lua_State *L, const char *prefix)
         break;
     }
   }
+}
+
+
+bool
+streq(const char *s, const char *t)
+{
+  if (!s && !t) return true;
+  if (!s || !t) return false;
+  return strcmp(s, t) == 0;
 }
 
 
@@ -313,12 +323,8 @@ luaopen_jotlib_path(lua_State *L)
 /* File System Operations */
 
 
-static int
-jot_glob(lua_State *L)
-{
-  // iterator yielding matching paths
-  return jot_error(L, "glob: not yet implemented");
-}
+#define makedir(path) mkdir((path), 0775)
+#define dropdir(path) rmdir((path))
 
 
 static int
@@ -349,17 +355,110 @@ jot_getcwd(lua_State *L)
 
 
 static int
-jot_isdir(lua_State *L)
+jot_mkdir(lua_State *L)
+{
+  const char *path = luaL_checkstring(L, 1);
+  if (!lua_isnone(L, 2))
+    return jot_error(L, "too many arguments");
+  log_trace("calling makedir %s", path);
+  if (makedir(path) < 0) {
+    lua_pushnil(L);
+    lua_pushfstring(L, "mkdir %s: %s", path, strerror(errno));
+    return 2;
+  }
+  lua_pushboolean(L, 1);
+  return 1;
+}
+
+
+static int
+jot_rmdir(lua_State *L)
+{
+  const char *path = luaL_checkstring(L, 1);
+  if (!lua_isnone(L, 2))
+    return jot_error(L, "too many arguments");
+  log_trace("calling dropdir %s", path);
+  if (dropdir(path) < 0) {
+    lua_pushnil(L);
+    lua_pushfstring(L, "rmdir %s: %s", path, strerror(errno));
+    return 2;
+  }
+  lua_pushboolean(L, 1);
+  return 1;
+}
+
+
+static int
+jot_exists(lua_State *L)
 {
   struct stat statbuf;
   const char *path = luaL_checkstring(L, 1);
-  assert(path != NULL);
-  errno = 0;
-  int r = stat(path, &statbuf);
-  if (r < 0)
+  const char *type = lua_tostring(L, 2);
+  enum { Any, Reg, Dir, Lnk } t;
+  if (!lua_isnone(L, type ? 3 : 2))
+    return jot_error(L, "too many arguments");
+  if (!type || streq(type, "any")) t = Any;
+  else if (streq(type, "file") || streq(type, "regular")) t = Reg;
+  else if (streq(type, "dir") || streq(type, "directory")) t = Dir;
+  else if (streq(type, "symlink")) t = Lnk;
+  else return jot_error(L, "invalid arg #2");
+  if (stat(path, &statbuf) < 0) {
+    if (errno == ENOENT) {
+      lua_pushboolean(L, 0);
+      return 1;
+    }
     return jot_error(L, "cannot stat %s: %s", path, strerror(errno));
-  lua_pushboolean(L, (int) S_ISDIR(statbuf.st_mode));
+  }
+  lua_pushboolean(L, t == Any ||
+    (t == Reg && S_ISREG(statbuf.st_mode)) ||
+    (t == Dir && S_ISDIR(statbuf.st_mode)) ||
+    (t == Lnk && S_ISLNK(statbuf.st_mode)));
   return 1;
+}
+
+
+static int
+jot_getinfo(lua_State *L)
+{
+  struct stat statbuf;
+  const char *type;
+  const char *path = luaL_checkstring(L, 1);
+  bool gottab = lua_istable(L, 2);
+  if (!lua_isnone(L, gottab ? 3 : 2))
+    return jot_error(L, "too many arguments");
+  if (stat(path, &statbuf) < 0) {
+    lua_pushnil(L);
+    lua_pushfstring(L, "cannot stat %s: %s", path, strerror(errno));
+    return 2;
+  }
+
+       if (S_ISREG(statbuf.st_mode)) type = "file";
+  else if (S_ISDIR(statbuf.st_mode)) type = "directory";
+  else if (S_ISLNK(statbuf.st_mode)) type = "symlink";
+  else                               type = "other";
+
+  if (gottab) lua_pushvalue(L, 2);
+  else lua_createtable(L, 0, 3);
+  lua_pushstring(L, type);
+  lua_setfield(L, -2, "type");
+  lua_pushinteger(L, statbuf.st_size);
+  lua_setfield(L, -2, "size");
+  lua_pushinteger(L, statbuf.st_mtime);
+  lua_setfield(L, -2, "mtime");
+  return 1;
+}
+
+
+static int
+jot_glob(lua_State *L)
+{
+  const char *root = luaL_checkstring(L, 1);
+  const char *pat = luaL_tostring(L, 2);
+
+  // iterator yielding matching paths
+  // probably much easier to write in Lua
+  // dir walk: start dir is glob prefix (up to last / befor first wildcard), filter paths against glob
+  return jot_error(L, "glob: not yet implemented");
 }
 
 
@@ -569,14 +668,19 @@ static const struct luaL_Reg jotlib[] = {
   {"log_warn",  jot_log_warn},
   {"log_error", jot_log_error},
   {"log_panic", jot_log_panic},
+
   {"basename",  jot_basename},
   {"dirname",   jot_dirname},
   {"splitpath", jot_splitpath},
   {"joinpath",  jot_joinpath},
   {"normpath",  jot_normpath},
+
   {"readdir",   jot_readdir},
   {"getcwd",    jot_getcwd},
-  {"isdir",     jot_isdir},
+  {"mkdir",     jot_mkdir},
+  {"rmdir",     jot_rmdir},
+  {"exists",    jot_exists},
+  {"getinfo",   jot_getinfo},
   {"glob",      jot_glob},
   {"pikchr",    jot_pikchr},
   {0, 0}

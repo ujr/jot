@@ -85,13 +85,23 @@ assert(path.norm("") == ".")
 
 
 log.info("Checking miscellaneous functions")
-assert(jot.isdir("."))
-assert(jot.isdir(".."))
-assert(not jot.isdir(EXEPATH))
-assert(jot.isdir(jot.dirname(EXEPATH)))
+assert(jot.exists(".", "directory") == true)
+assert(jot.exists("..", "file") == false)
+assert(jot.exists("..", "any") == true)
+assert(jot.exists(EXEPATH))
+assert(jot.exists(EXEPATH, "file"))
+assert(not jot.exists(EXEPATH, "directory"))
+assert(jot.exists(jot.dirname(EXEPATH), "directory"))
 local s = jot.getcwd()
 assert(type(s) == "string")
 assert(#s > 0)
-
+local name = "/tmp/unlikelybutriskyname"
+assert(jot.mkdir(name))
+assert(jot.exists(name, "directory"))
+local info = assert(jot.getinfo(name))
+assert(type(info) == "table")
+assert(info.type == "directory")
+--print(info.type, info.size, os.date("%Y-%m-%d %H:%M:%S", info.mtime))
+assert(jot.rmdir(name))
 
 log.info("OK");
