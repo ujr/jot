@@ -84,6 +84,15 @@ assert(path.norm("/////") == "/")
 assert(path.norm("") == ".")
 
 
+log.info("Checking path.match()")
+assert(path.match("", ""))
+assert(path.match("*.txt", "file.txt"))
+assert(not path.match("*.txt", "dir/file.txt"))
+assert(path.match("**/*.txt", "dir/file.txt"))
+assert(not path.match("foo/*", "foo/.hidden"))
+assert(path.match("foo/.*", "foo/.hidden"))
+
+
 log.info("Checking miscellaneous functions")
 assert(jot.exists(".", "directory") == true)
 assert(jot.exists("..", "file") == false)

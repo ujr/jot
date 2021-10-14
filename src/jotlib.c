@@ -19,6 +19,7 @@
 #include "jotlib.h"
 #include "log.h"
 #include "pikchr.h"
+#include "wildmatch.h"
 
 
 static struct {
@@ -302,12 +303,28 @@ jot_normpath(lua_State *L)
 }
 
 
+static int
+jot_matchpath(lua_State *L)
+{
+  int flags, r;
+  const char *pat = luaL_checkstring(L, 1);
+  const char *path = luaL_checkstring(L, 2);
+  if (!lua_isnone(L, 3))
+    return jot_error(L, "too many arguments");
+  flags = WILD_PATHNAME | WILD_PERIOD;
+  r = wildmatch(pat, path, flags);
+  lua_pushboolean(L, r);
+  return 1;
+}
+
+
 static const struct luaL_Reg pathlib[] = {
   {"basename", jot_basename},
   {"dirname",  jot_dirname},
   {"split",    jot_splitpath},
   {"join",     jot_joinpath},
   {"norm",     jot_normpath},
+  {"match",    jot_matchpath},
   {0, 0}
 };
 
@@ -453,7 +470,10 @@ static int
 jot_glob(lua_State *L)
 {
   const char *root = luaL_checkstring(L, 1);
-  const char *pat = luaL_tostring(L, 2);
+  const char *pat = lua_tostring(L, 2);
+
+  UNUSED(root);
+  UNUSED(pat);
 
   // iterator yielding matching paths
   // probably much easier to write in Lua
@@ -674,6 +694,7 @@ static const struct luaL_Reg jotlib[] = {
   {"splitpath", jot_splitpath},
   {"joinpath",  jot_joinpath},
   {"normpath",  jot_normpath},
+  {"matchpath", jot_matchpath},
 
   {"readdir",   jot_readdir},
   {"getcwd",    jot_getcwd},
