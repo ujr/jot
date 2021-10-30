@@ -8,9 +8,11 @@
 #include <string.h>
 
 #include <dirent.h>
+#include <fcntl.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <utime.h>
 
 #include "lua.h"
 #include "lauxlib.h"
@@ -345,6 +347,27 @@ luaopen_jotlib_path(lua_State *L)
 
 
 static int
+touchfile(const char *path, time_t ttime)
+{
+  struct utimbuf times, *ptimes;
+  mode_t mode = 0666; /* rw-rw-rw- */
+  log_trace("touchfile: ttime=%ld, path=%s", (long)ttime, path);
+  int fd = open(path, O_RDWR|O_CREAT|O_NOCTTY, mode);
+  if (fd < 0) return -1;
+  if (close(fd) < 0) return -1;
+  /* now the file exists; set times */
+  if (ttime > 0) {
+    times.modtime = ttime;
+    times.actime = ttime;
+    ptimes = &times;
+  }
+  else ptimes = 0; /* set current time */
+  if (utime(path, ptimes) < 0) return -1;
+  return 0; /* ok */
+}
+
+
+static int
 jot_getcwd(lua_State *L)
 {
   char *buf = 0;
@@ -398,6 +421,25 @@ jot_rmdir(lua_State *L)
   if (dropdir(path) < 0) {
     lua_pushnil(L);
     lua_pushfstring(L, "rmdir %s: %s", path, strerror(errno));
+    return 2;
+  }
+  lua_pushboolean(L, 1);
+  return 1;
+}
+
+
+static int
+jot_touch(lua_State *L)
+{
+  int isnum;
+  const char *path = luaL_checkstring(L, 1);
+  lua_Number ttime = lua_tonumberx(L, 2, &isnum);
+  if (!lua_isnone(L, 3))
+    return jot_error(L, "too many arguments");
+  log_trace("calling touchfile %s", path);
+  if (touchfile(path, (time_t)(long)ttime) < 0) {
+    lua_pushnil(L);
+    lua_pushfstring(L, "touch %s: %s", path, strerror(errno));
     return 2;
   }
   lua_pushboolean(L, 1);
@@ -698,6 +740,7 @@ static const struct luaL_Reg jotlib[] = {
 
   {"readdir",   jot_readdir},
   {"getcwd",    jot_getcwd},
+  {"touch",     jot_touch},
   {"mkdir",     jot_mkdir},
   {"rmdir",     jot_rmdir},
   {"exists",    jot_exists},
