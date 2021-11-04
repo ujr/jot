@@ -58,22 +58,41 @@ os.mkdir(path)    -- create directory (parents must exist)
 os.rmdir(path)    -- remove directory (must be empty)
 os.listdir(path)  -- return all directory entries (names)
 os.touch(path, ttime)  -- ensure file exists, update times
+os.remove(path)        -- delete the file at path
+os.rename(old, new)    -- rename and/or move a file
 os.exists(path, type)  -- return true iff path exists
+os.getinfo(path, tab)  -- get info on file at path
+os.walkdir(path, ...)  -- file tree iterator (see below)
 ```
+
+The functions that modify the file system return `true` on
+success, and `nil` plus an error message (string) on error.
 
 The **touch** updates the modification and access times
 of the given file to the given time (or the current time
 if `ttime` is missing or `0`). If the file at *path* does
-not exist, an empty file is created.
+not exist, an empty file is created. (Creating a missing
+file and setting its timestamps is *not* atomic.)
 
 The **exists** function checks if the file at *path* exists
 and is of the given *type*. If the *type* argument is missing,
 it checks if the file at *path* exists regardless of its type.
 Valid types are:
-`"regular"` for a regular file,
-`"directory"` for a directory,
+`"regular"` or `"file"` for a regular file,
+`"directory"` or `"dir"` for a directory,
 `"symlink"` for a symbolic link.
 
 The convenient functions `isdir(path)` and `isfile(path)` can
 easily be implemented as `exists(path, "directory")` and
 `exists(path, "regular")`.
+
+The **getinfo** function returns a table with information
+on the file at the given *path*. If the second argument is
+a table, this table will be reused and returned. Three
+fields are added to the returned table: `type`, which is
+one of `"file"`, `"directory"`, `"symlink"`, `"other"`,
+`size`, which is file size in bytes, and `mtime` which
+is the time of last modification in seconds since the epoch.
+
+The **walkdir** function returns an iterator over the file
+tree starting at the given root path.

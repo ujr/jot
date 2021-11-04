@@ -34,11 +34,25 @@ This is Jot {{JOT_VERSION}}, f() = {{f}}, {{o.a}}{{o.b}}{{&o.c}}
 ]], _ENV)
 print(s)
 
-for dir in jot.readdir("/home/ujr/doc/src/jot/src") do
-  print(dir)
+for _, dir in ipairs(jot.listdir "/home/ujr/doc/src/jot/src") do
+  print("  " .. dir)
 end
 
 print("cwd: " .. jot.getcwd())
 print(path.norm(path.join("./", "good", ".", "bye", "/.")))
 --log.panic = "log is a readonly table"
 --error("oops, an error")
+
+assert(jot.touch("./DROPME.tmp"))
+assert(jot.mkdir("./tempdir"))
+assert(jot.rename("./DROPME.tmp", "./tempdir/testfile"))
+assert(jot.remove("./tempdir/testfile"))
+assert(jot.rmdir("./tempdir"))
+print("cwd is " .. jot.getcwd())
+print("$HOME is " .. jot.getenv("HOME"))
+
+print("===jot.walkdir(.)===")
+print("TYPE", "BYTES", "MODIFIED", "PATH")
+for path, type, size, mtime in jot.walkdir(".") do
+  print(type, size, mtime, path)
+end

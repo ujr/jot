@@ -1,3 +1,4 @@
+#define _POSIX_C_SOURCE 200112L  /* for lstat(2) */
 
 #include <assert.h>
 #include <errno.h>
@@ -72,12 +73,25 @@ dump_stack(lua_State *L, const char *prefix)
 }
 
 
+/** convenience around strcmp(3) */
 bool
 streq(const char *s, const char *t)
 {
   if (!s && !t) return true;
   if (!s || !t) return false;
   return strcmp(s, t) == 0;
+}
+
+
+/** strdup(s), which is not in ANSI C */
+static char *
+strcopy(const char *s)
+{
+  if (!s) return 0;
+  size_t l = strlen(s);
+  char *t = malloc(l+1);
+  if (!t) return 0;
+  return memcpy(t, s, l+1);
 }
 
 
@@ -368,6 +382,26 @@ touchfile(const char *path, time_t ttime)
 
 
 static int
+ok(lua_State *L)
+{
+  lua_pushboolean(L, 1);
+  return 1;
+}
+
+
+static int
+failed(lua_State *L, const char *fmt, ...)
+{
+  va_list ap;
+  va_start(ap, fmt);
+  lua_pushnil(L);
+  lua_pushvfstring(L, fmt, ap);
+  va_end(ap);
+  return 2;
+}
+
+
+static int
 jot_getcwd(lua_State *L)
 {
   char *buf = 0;
@@ -401,13 +435,9 @@ jot_mkdir(lua_State *L)
   if (!lua_isnone(L, 2))
     return jot_error(L, "too many arguments");
   log_trace("calling makedir %s", path);
-  if (makedir(path) < 0) {
-    lua_pushnil(L);
-    lua_pushfstring(L, "mkdir %s: %s", path, strerror(errno));
-    return 2;
-  }
-  lua_pushboolean(L, 1);
-  return 1;
+  if (makedir(path) < 0)
+    return failed(L, "mkdir %s: %s", path, strerror(errno));
+  return ok(L);
 }
 
 
@@ -418,13 +448,43 @@ jot_rmdir(lua_State *L)
   if (!lua_isnone(L, 2))
     return jot_error(L, "too many arguments");
   log_trace("calling dropdir %s", path);
-  if (dropdir(path) < 0) {
-    lua_pushnil(L);
-    lua_pushfstring(L, "rmdir %s: %s", path, strerror(errno));
-    return 2;
+  if (dropdir(path) < 0)
+    return failed(L, "rmdir %s: %s", path, strerror(errno));
+  return ok(L);
+}
+
+
+static int
+jot_listdir(lua_State *L)
+{
+  DIR *dp;
+  struct dirent *e;
+  const char *path;
+  int i;
+
+  path = luaL_checkstring(L, 1);
+  if (lua_gettop(L) > 1)
+    return jot_error(L, "too many arguments");
+
+  dp = opendir(path);
+  if (!dp)
+    return failed(L, "opendir %s: %s", path, strerror(errno));
+
+  lua_newtable(L);
+  errno = 0;
+  for (i = 1; (e = readdir(dp)); i++) {
+    lua_pushinteger(L, i);
+    lua_pushstring(L, e->d_name);
+    lua_settable(L, -3);
   }
-  lua_pushboolean(L, 1);
-  return 1;
+
+  if (errno) {
+    lua_pop(L, 1); /* the table */
+    return failed(L, "listdir %s: %s", path, strerror(errno));
+  }
+
+  closedir(dp);
+  return 1; /* the table */
 }
 
 
@@ -437,13 +497,32 @@ jot_touch(lua_State *L)
   if (!lua_isnone(L, 3))
     return jot_error(L, "too many arguments");
   log_trace("calling touchfile %s", path);
-  if (touchfile(path, (time_t)(long)ttime) < 0) {
-    lua_pushnil(L);
-    lua_pushfstring(L, "touch %s: %s", path, strerror(errno));
-    return 2;
-  }
-  lua_pushboolean(L, 1);
-  return 1;
+  if (touchfile(path, (time_t)(long)ttime) < 0)
+    return failed(L, "touch %s: %s", path, strerror(errno));
+  return ok(L);
+}
+
+
+static int
+jot_remove(lua_State *L) {
+  const char *path = luaL_checkstring(L, 1);
+  if (lua_gettop(L) > 1)
+    return jot_error(L, "too many arguments");
+  if (remove(path) != 0)
+    return failed(L, "remove %s: %s", path, strerror(errno));
+  return ok(L);
+}
+
+
+static int
+jot_rename(lua_State *L) {
+  const char *oldname = luaL_checkstring(L, 1);
+  const char *newname = luaL_checkstring(L, 2);
+  if (lua_gettop(L) > 2)
+    return jot_error(L, "too many arguments");
+  if (rename(oldname, newname))
+    return failed(L, "rename: %s", strerror(errno));
+  return ok(L);
 }
 
 
@@ -485,11 +564,8 @@ jot_getinfo(lua_State *L)
   bool gottab = lua_istable(L, 2);
   if (!lua_isnone(L, gottab ? 3 : 2))
     return jot_error(L, "too many arguments");
-  if (stat(path, &statbuf) < 0) {
-    lua_pushnil(L);
-    lua_pushfstring(L, "cannot stat %s: %s", path, strerror(errno));
-    return 2;
-  }
+  if (stat(path, &statbuf) < 0)
+    return failed(L, "cannot stat %s: %s", path, strerror(errno));
 
        if (S_ISREG(statbuf.st_mode)) type = "file";
   else if (S_ISDIR(statbuf.st_mode)) type = "directory";
@@ -509,18 +585,162 @@ jot_getinfo(lua_State *L)
 
 
 static int
-jot_glob(lua_State *L)
+jot_getenv(lua_State *L)
 {
-  const char *root = luaL_checkstring(L, 1);
-  const char *pat = lua_tostring(L, 2);
+  const char *name = luaL_checkstring(L, 1);
+  const char *value = getenv(name);
+  lua_pushstring(L, value); /* pushes nil if value is null */
+  return 1;
+}
 
-  UNUSED(root);
-  UNUSED(pat);
 
-  // iterator yielding matching paths
-  // probably much easier to write in Lua
-  // dir walk: start dir is glob prefix (up to last / befor first wildcard), filter paths against glob
-  return jot_error(L, "glob: not yet implemented");
+#define JOTLIB_WALKDIR_REGKEY "jotlib.walkdir"
+
+//  Usage: for path, type, size, mtime in walkdir(path, flags, pat) do ... end
+//
+//  path:  entry point directory path
+//  pat:   wildcard pattern
+//  flags:
+//    - MOUNT  -- do not cross mount points
+//    - POST   -- traverse in post-order (default: pre-order)
+//    - REG    -- yield regular files only (no directories etc)
+//    - DIR    -- yield directories only (no files etc)
+//    - FOLLOW -- follow symlinks (default: physical walk)
+
+#include "pathbuf.h"
+
+struct wdir { DIR *dp; struct wdir *next; };
+
+struct walk {
+  const char *root;
+  const char *pat;
+  int flags;
+  struct pathbuf buf;
+  struct wdir *top;
+};
+
+#define IS_DOT_OR_DOTDOT(s) (s[0]=='.'&&(s[1]==0||(s[1]=='.'&&s[2]==0)))
+
+static bool pushdir(struct walk *pwalk, const char *path) {
+  struct wdir *pw = malloc(sizeof(*pw));
+  if (!pw) return false;
+  pw->dp = opendir(path);
+  if (!pw->dp) { free(pw); return false; }
+  pw->next = pwalk->top;
+  pwalk->top = pw;
+  return true;
+}
+
+static void popdir(struct walk *pwalk) {
+  struct wdir *top = pwalk->top;
+  assert(top != NULL);
+  (void) closedir(top->dp);
+  pwalk->top = top->next;
+  free(top);
+}
+
+static int
+jot_walkdir_gc(lua_State *L)
+{
+  struct walk *pwalk = lua_touserdata(L, 1);
+  if (pwalk) {
+    log_trace("jot_walkdir_gc");
+    if (pwalk->root) free((char*)pwalk->root);
+    if (pwalk->pat) free((char*)pwalk->pat);
+    pathbuf_free(&pwalk->buf);
+    while (pwalk->top)
+      popdir(pwalk);
+  }
+  return 0;
+}
+
+static int
+jot_walkdir_iter(lua_State *L)
+{
+  const char *name, *path; // current base name and full path
+  struct stat statbuf;
+  struct dirent *e;
+  struct walk *pwalk = lua_touserdata(L, lua_upvalueindex(1));
+
+  // TODO match against pat and flags
+  // TODO honor flag to not cross device boundary
+  // TODO how to detect/break cycles?
+  // TODO limit depth (and thus open DIRs)?
+
+  int initialized = pwalk->buf.path != 0;
+  if (!initialized) {
+    name = "";
+    path = pathbuf_init(&pwalk->buf, pwalk->root);
+    log_trace("walkdir_iter: initialize (path=%s)", path);
+    if (!path) jot_error(L, "walkdir: %s", strerror(errno));
+    goto start;
+  }
+
+  while (pwalk->top) {
+    errno = 0;
+    if (!(e = readdir(pwalk->top->dp))) {
+      if (errno)
+        jot_error(L, "readdir: %s", strerror(errno));
+      popdir(pwalk);
+      pathbuf_pop(&pwalk->buf);
+      continue;
+    }
+    name = e->d_name;
+    if (IS_DOT_OR_DOTDOT(name)) continue;
+    path = pathbuf_push(&pwalk->buf, name);
+
+start:
+    lua_pushstring(L, path);
+
+    if (lstat(path, &statbuf) < 0) {
+      if (errno != EACCES)
+        jot_error(L, "walkdir: stat %s: %s", path, strerror(errno));
+      lua_pushstring(L, "NS");
+    }
+    else if (S_ISDIR(statbuf.st_mode)) {
+      bool ok = pushdir(pwalk, path);
+      lua_pushstring(L, ok ? "D" : "DNR");
+    }
+    else {
+      pathbuf_pop(&pwalk->buf);
+      lua_pushstring(L, S_ISLNK(statbuf.st_mode) ? "SL" : "F");
+    }
+
+    lua_pushinteger(L, statbuf.st_size);
+    lua_pushinteger(L, statbuf.st_mtime);
+    return 4;
+  }
+
+  return 0; /* iteration done */
+}
+
+static int
+jot_walkdir(lua_State *L)
+{
+  struct walk *pwalk;
+  const char *path = luaL_checkstring(L, 1);
+  int flags = lua_tointeger(L, 2);
+  const char *pat = lua_tostring(L, 3);
+
+  if (lua_gettop(L) > 1) // TODO relax for flags&pat
+    return jot_error(L, "too many arguments");
+
+  pwalk = lua_newuserdata(L, sizeof(*pwalk));
+  assert(pwalk != NULL); // TODO null or error on ENOMEM?
+
+  memset(pwalk, 0, sizeof(*pwalk));
+  pwalk->root = strcopy(path);
+  if (pat) pwalk->pat = strcopy(pat);
+  pwalk->flags = flags;
+  if (!pwalk->root || (pat && !pwalk->pat))
+    return jot_error(L, "walkdir: %s", strerror(errno));
+
+  luaL_getmetatable(L, JOTLIB_WALKDIR_REGKEY);
+  lua_setmetatable(L, -2); /* udata's metatable; from now on __gc may be called */
+
+  /* the iterator fun's upvalue, the struct, is already on stack */
+  lua_pushcclosure(L, jot_walkdir_iter, 1);
+  return 1;
 }
 
 
@@ -610,62 +830,6 @@ luaopen_jotlib_log(lua_State *L)
 }
 
 
-/* File System */
-
-#define JOTLIB_READDIR_REGKEY JOTLIB_REGKEY ".readdir"
-
-static int
-jot_readdir_iter(lua_State *L)
-{
-  struct dirent *entry;
-  DIR *dir = *(DIR **) lua_touserdata(L, lua_upvalueindex(1));
-  errno = 0;
-  entry = readdir(dir);
-  if (entry) {
-    lua_pushstring(L, entry->d_name);
-    return 1;
-  }
-  if (errno) {
-    jot_error(L, "error reading directory: %s", strerror(errno));
-  }
-  return 0; /* no more entries */
-}
-
-static int jot_readdir_gc(lua_State *L)
-{
-  DIR **dirp = (DIR **) lua_touserdata(L, 1);
-  if (*dirp) {
-    errno = 0;
-    int r = closedir(*dirp);
-    log_trace("jot_readdir_gc: closedir() returned %d, errno=%d", r, errno);
-    *dirp = 0;
-  }
-  return 0;
-}
-
-static int
-jot_readdir(lua_State *L)
-{
-  const char *path = luaL_checkstring(L, 1);
-  DIR **dirp = lua_newuserdata(L, sizeof(DIR *));
-
-  assert(dirp != NULL);
-
-  *dirp = 0; /* unopened */
-  luaL_getmetatable(L, JOTLIB_READDIR_REGKEY);
-  lua_setmetatable(L, -2); /* from now on __gc may be called */
-
-  *dirp = opendir(path);
-  if (!*dirp) {
-    return jot_error(L, "cannot open %s: %s", path, strerror(errno));
-  }
-
-  /* push iterator function (its upvalue, the DIR, is alreay on stack) */
-  lua_pushcclosure(L, jot_readdir_iter, 1);
-  return 1;
-}
-
-
 /* Lua function: pikchr(str) */
 static int
 jot_pikchr(lua_State *L)
@@ -738,14 +902,17 @@ static const struct luaL_Reg jotlib[] = {
   {"normpath",  jot_normpath},
   {"matchpath", jot_matchpath},
 
-  {"readdir",   jot_readdir},
   {"getcwd",    jot_getcwd},
-  {"touch",     jot_touch},
   {"mkdir",     jot_mkdir},
   {"rmdir",     jot_rmdir},
+  {"listdir",   jot_listdir},
+  {"touch",     jot_touch},
+  {"rename",    jot_rename},
+  {"remove",    jot_remove},
   {"exists",    jot_exists},
   {"getinfo",   jot_getinfo},
-  {"glob",      jot_glob},
+  {"getenv",    jot_getenv},
+  {"walkdir",   jot_walkdir},
   {"pikchr",    jot_pikchr},
   {0, 0}
 };
@@ -757,8 +924,8 @@ luaopen_jotlib(lua_State *L)
   J.dirsep = getdirsep(L);
   log_trace("using '%c' as dirsep", J.dirsep);
 
-  luaL_newmetatable(L, JOTLIB_READDIR_REGKEY);
-  lua_pushcfunction(L, jot_readdir_gc);
+  luaL_newmetatable(L, JOTLIB_WALKDIR_REGKEY);
+  lua_pushcfunction(L, jot_walkdir_gc);
   lua_setfield(L, -2, "__gc");
   lua_pop(L, 1);
 
