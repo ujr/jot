@@ -5,8 +5,8 @@ CFLAGS  = -std=c99 -Wall -Wextra -Og -g -I../lib/lua54
 LDFLAGS = -L../lib/lua54
 LDLIBS  = -llua -lm -ldl
 
-JOTSRC = main.c jotlib.c log.c cmdargs.c pikchr.c wildmatch.c pathbuf.c
-JOTINC = jot.h jotlib.h log.h cmdargs.h pikchr.h wildmatch.h pathbuf.h
+JOTSRC = main.c jotlib.c log.c cmdargs.c pikchr.c wildmatch.c walkdir.c pathbuf.c utils.c pathlib.c loglib.c
+JOTINC = jot.h jotlib.h log.h cmdargs.h pikchr.h wildmatch.h walkdir.h pathbuf.h utils.h
 
 all: jot
 

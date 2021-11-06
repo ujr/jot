@@ -57,12 +57,12 @@ os.getcwd()       -- get current working directory
 os.mkdir(path)    -- create directory (parents must exist)
 os.rmdir(path)    -- remove directory (must be empty)
 os.listdir(path)  -- return all directory entries (names)
-os.touch(path, ttime)  -- ensure file exists, update times
-os.remove(path)        -- delete the file at path
-os.rename(old, new)    -- rename and/or move a file
-os.exists(path, type)  -- return true iff path exists
-os.getinfo(path, tab)  -- get info on file at path
-os.walkdir(path, ...)  -- file tree iterator (see below)
+os.touch(path, ttime)   -- ensure file exists, update times
+os.remove(path)         -- delete the file at path
+os.rename(old, new)     -- rename and/or move a file
+os.exists(path, type)   -- return true iff path exists
+os.getinfo(path, tab)   -- get info on file at path
+os.walkdir(path, flags) -- file tree iterator (see below)
 ```
 
 The functions that modify the file system return `true` on
@@ -95,4 +95,5 @@ one of `"file"`, `"directory"`, `"symlink"`, `"other"`,
 is the time of last modification in seconds since the epoch.
 
 The **walkdir** function returns an iterator over the file
-tree starting at the given root path.
+tree starting at the given root path. See *walkdir.h* for
+details.

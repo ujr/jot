@@ -10,6 +10,7 @@ struct pathbuf {
   size_t minlen;
 };
 
+#define pathbuf_path(pp) ((pp)->path)
 const char *pathbuf_init(struct pathbuf *pp, const char *root);
 const char *pathbuf_push(struct pathbuf *pp, const char *name);
 const char *pathbuf_pop(struct pathbuf *pp);

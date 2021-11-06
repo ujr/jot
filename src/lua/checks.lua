@@ -6,16 +6,17 @@ local log = jot.log
 
 
 log.info("Checking path.basename()")
+path.config("/")
 assert(path.basename("") == "")
 assert(path.basename(".") == ".")
 assert(path.basename("..") == "..")
 assert(path.basename("/") == ""); -- POSIX: "/"
-assert(path.basename("\\") == "");
+--assert(path.basename("\\") == "");
 assert(path.basename("///") == "")
 assert(path.basename("file.txt") == "file.txt")
 assert(path.basename("/foo/bar") == "bar");
-assert(path.basename("\\foo\\bar") == "bar");
-assert(path.basename("/foo\\bar") == "bar");
+--assert(path.basename("\\foo\\bar") == "bar");
+--assert(path.basename("/foo\\bar") == "bar");
 assert(path.basename("\\foo/bar") == "bar");
 assert(path.basename("foo/bar/") == ""); -- POSIX: "bar" (GNU: empty)
 
@@ -100,7 +101,7 @@ assert(jot.exists("..", "any") == true)
 assert(jot.exists(EXEPATH))
 assert(jot.exists(EXEPATH, "file"))
 assert(not jot.exists(EXEPATH, "directory"))
-assert(jot.exists(jot.dirname(EXEPATH), "directory"))
+assert(jot.exists(path.dirname(EXEPATH), "directory"))
 local s = jot.getcwd()
 assert(type(s) == "string")
 assert(#s > 0)

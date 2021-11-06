@@ -53,6 +53,6 @@ print("$HOME is " .. jot.getenv("HOME"))
 
 print("===jot.walkdir(.)===")
 print("TYPE", "BYTES", "MODIFIED", "PATH")
-for path, type, size, mtime in jot.walkdir(".") do
+for path, type, size, mtime in jot.walkdir(".", 0) do
   print(type, size, mtime, path)
 end
