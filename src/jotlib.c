@@ -297,6 +297,67 @@ jot_getenv(lua_State *L)
 }
 
 
+static void
+randlets(char *buf, size_t len)
+{
+  /* 64 (6 bits) letters, some repeated (lower+upper is only 52) */
+  static const char letters[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZADGJMP"
+    "abcdefghijklmnopqrstuvwxyzknqtwz";
+  size_t i;
+
+  /* Seed with clock and buffer's address; repeatedly get 6 bits
+     from somewhere in the middle of the next random number */
+  srand(clock()*14741+(uintptr_t)buf);
+  for (i=0; i<len; i++)
+    buf[i] = letters[(rand()&0x3F0)>>4];
+}
+
+
+static int
+jot_tempdir(lua_State *L)
+{
+  static const char *pat = "XXXXXX";
+  const char *arg = lua_tostring(L, 1);
+  size_t len, patlen = strlen(pat);
+  char *template;
+
+  if (arg) {
+    len = strlen(arg);
+    if (len < patlen || memcmp(arg+len-patlen, pat, patlen)) {
+      errno = EINVAL;
+      return failed(L, "tempdir: argument must end in %s", pat);
+    }
+    template = malloc(len+1);
+    if (!template) return failed(L, "tempdir: %s", strerror(errno));
+    memcpy(template, arg, len+1);
+  }
+  else {
+    const char *tmp = getenv("TMPDIR");
+    if (!tmp) tmp = getenv("TEMP");
+    if (!tmp) tmp = "/tmp";
+    len = strlen(tmp)+5+patlen;
+    template = malloc(len+1);
+    if (!template) return failed(L, "tempdir: %s", strerror(errno));
+    sprintf(template, "%s/jot-%s", tmp, pat);
+  }
+
+  int attempts = 99;
+  do {
+    randlets(template+len-patlen, patlen);
+    if (mkdir(template, 0700) == 0) {
+      log_trace("created directory %s", template);
+      lua_pushstring(L, template);
+      free(template);
+      return 1;
+    }
+  } while (--attempts > 0 && errno == EEXIST);
+
+  free(template);
+  return failed(L, "tempdir: %s", strerror(errno));
+}
+
+
 static int
 jot_walkdir_gc(lua_State *L)
 {
@@ -434,6 +495,7 @@ static const struct luaL_Reg jotlib[] = {
   {"exists",    jot_exists},
   {"getinfo",   jot_getinfo},
   {"getenv",    jot_getenv},
+  {"tempdir",   jot_tempdir},
   {"walkdir",   jot_walkdir},
   {"pikchr",    jot_pikchr},
   {0, 0}

@@ -114,4 +114,29 @@ assert(info.type == "directory")
 --print(info.type, info.size, os.date("%Y-%m-%d %H:%M:%S", info.mtime))
 assert(jot.rmdir(name))
 
+
+log.info("Checking file system operations")
+dir = assert(jot.tempdir())
+assert(jot.touch(path.join(dir, "foo")))
+assert(jot.touch(path.join(dir, "bar")))
+assert(jot.touch(path.join(dir, "baz")))
+assert(jot.mkdir(path.join(dir, "sub")))
+assert(jot.touch(path.join(dir, "sub", "spam")))
+assert(jot.touch(path.join(dir, "sub", "ham")))
+assert(jot.mkdir(path.join(dir, "sub", "subsub")))
+assert(jot.touch(path.join(dir, "sub", "subsub", "deeply")))
+assert(jot.touch(path.join(dir, "sub", "subsub", "nested")))
+--check stuff exists:
+assert(jot.exists(dir), "directory")
+assert(jot.exists(path.join(dir, "sub/subsub/nested"), "file"))
+assert(jot.exists(path.join(dir, "sub/subsub"), "directory"))
+--and recursively delete by a post-order walk (DP not D):
+for path, type in jot.walkdir(dir) do
+  if type=="F" or type=="DP" or type=="SL" then
+    assert(jot.remove(path))
+  end
+end
+assert(not jot.exists(dir))
+
+
 log.info("OK");

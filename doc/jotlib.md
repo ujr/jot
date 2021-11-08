@@ -63,6 +63,7 @@ os.rename(old, new)     -- rename and/or move a file
 os.exists(path, type)   -- return true iff path exists
 os.getinfo(path, tab)   -- get info on file at path
 os.walkdir(path, flags) -- file tree iterator (see below)
+os.tempdir(template)    -- create temporary directory
 ```
 
 The functions that modify the file system return `true` on
@@ -97,3 +98,10 @@ is the time of last modification in seconds since the epoch.
 The **walkdir** function returns an iterator over the file
 tree starting at the given root path. See *walkdir.h* for
 details.
+
+The **tempdir** function creates an empty directory with
+a randomly chosen name and returns that name.
+If no argument is given, the directory will be created in
+`$TMPDIR` or */tmp*. If the *template* argument is given,
+it must be a string that ends in `XXXXXX` and is a valid
+file path; the `X` will be replaced with random letters.
