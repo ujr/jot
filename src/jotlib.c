@@ -97,7 +97,7 @@ failed(lua_State *L, const char *fmt, ...)
 {
   va_list ap;
   va_start(ap, fmt);
-  lua_pushnil(L);
+  luaL_pushfail(L);
   lua_pushvfstring(L, fmt, ap);
   va_end(ap);
   return 2;
@@ -137,6 +137,7 @@ jot_mkdir(lua_State *L)
   const char *path = luaL_checkstring(L, 1);
   if (!lua_isnone(L, 2))
     return jot_error(L, "too many arguments");
+  // TODO create missing parent dirs (like mkdir -p)
   log_trace("calling mkdir %s", path);
   if (mkdir(path, 0775) < 0)
     return failed(L, "mkdir %s: %s", path, strerror(errno));
@@ -446,15 +447,11 @@ jot_pikchr(lua_State *L)
   t = pikchr(s, class, flags, &w, &h);
 
   if (!t) {
-    lua_pushnil(L);
-    lua_pushstring(L, "pikchr() returns null; out of memory?");
-    return 2;
+    return failed(L, "pikchr() returns null; out of memory?");
   }
 
   if (w < 0) {
-    lua_pushnil(L);
-    lua_pushstring(L, t);
-    r = 2;
+    r = failed(L, "pikchr: %s", t);
   }
   else {
     lua_pushstring(L, t);
