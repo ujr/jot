@@ -20,6 +20,7 @@
 #include "jot.h"
 #include "jotlib.h"
 #include "log.h"
+#include "blob.h"
 #include "pikchr.h"
 #include "utils.h"
 #include "walkdir.h"
@@ -466,6 +467,19 @@ jot_pikchr(lua_State *L)
 }
 
 
+static int
+jot_checkblob(lua_State *L)
+{
+  int harder = lua_toboolean(L, 1);
+  int ok = blob_check(harder);
+  if (ok) {
+    lua_pushboolean(L, 1);
+    return 1;
+  }
+  return failed(L, "Blob self checks failed");
+}
+
+
 /* Return directory separator: '\' on Windows and '/' elsewhere.
  * Get dirsep from package.config, a Lua compile time constant.
  */
@@ -495,6 +509,7 @@ static const struct luaL_Reg jotlib[] = {
   {"tempdir",   jot_tempdir},
   {"walkdir",   jot_walkdir},
   {"pikchr",    jot_pikchr},
+  {"checkblob", jot_checkblob},
   {0, 0}
 };
 

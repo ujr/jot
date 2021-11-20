@@ -5,6 +5,10 @@ local path = jot.path
 local log = jot.log
 
 
+log.info("Checking blob functions")
+assert(jot.checkblob(true))
+
+
 log.info("Checking path.basename()")
 path.config("/")
 assert(path.basename("") == "")
