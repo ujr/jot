@@ -15,12 +15,11 @@
 #define MAX(x,y)    ((x) > (y) ? (x) : (y))
 #define ISSPACE(x)  isspace(x)
 
-// TODO review LEN/SIZE
-#define LEN(sp)     ((sp)->n)
-#define SIZE(sp)    ((sp)->a & ~1)              /* mask off lsb */
+#define LEN(sp)     ((sp)->len)
+#define SIZE(sp)    ((sp)->size & ~1)           /* mask off lsb */
 #define HASROOM(sp,n) (LEN(sp)+(n)+1 <= SIZE(sp))  /* +1 for \0 */
 #define NEXTSIZE(sp)  GROWFUNC(SIZE(sp))   /* next default size */
-#define SETFAILED(sp) ((sp)->a |= 1)         /* set lsb to flag */
+#define SETFAILED(sp) ((sp)->size |= 1)      /* set lsb to flag */
 
 
 static void (*nomem)(void) = 0;
@@ -41,8 +40,8 @@ blob_addchar(Blob *bp, int c)
   if (!bp->buf || !HASROOM(bp, 1)) {
     if (!blob_prepare(bp, 1)) return; /* nomem */
   }
-  bp->buf[bp->n++] = (unsigned char) c;
-  bp->buf[bp->n] = '\0';
+  bp->buf[bp->len++] = (unsigned char) c;
+  bp->buf[bp->len] = '\0';
 }
 
 
@@ -59,9 +58,9 @@ blob_addbuf(Blob *bp, const char *buf, size_t len)
   assert(bp != 0);
   if (!buf) len = 0;
   if (!blob_prepare(bp, len)) return; /* nomem */
-  if (buf) memcpy(bp->buf + bp->n, buf, len);
-  bp->n += len;
-  bp->buf[bp->n] = '\0';
+  if (buf) memcpy(bp->buf + bp->len, buf, len);
+  bp->len += len;
+  bp->buf[bp->len] = '\0';
 }
 
 
@@ -87,39 +86,39 @@ blob_addvfmt(Blob *bp, const char *fmt, va_list ap)
      includes the terminating \0, whereas its return value does not. */
 
   va_copy(aq, ap); /* C99 */
-  chars = vsnprintf(bp->buf + bp->n, 0, fmt, aq);
+  chars = vsnprintf(bp->buf + bp->len, 0, fmt, aq);
   va_end(aq);
 
   if (chars < 0) return;
   if (!blob_prepare(bp, chars)) return; /* nomem */
 
-  chars = vsnprintf(bp->buf + bp->n, chars+1, fmt, ap);
+  chars = vsnprintf(bp->buf + bp->len, chars+1, fmt, ap);
   if (chars < 0) return;
 
-  bp->n += chars;
+  bp->len += chars;
 }
 
 
-char * /* ensure enough space for dn more bytes */
-blob_prepare(Blob *bp, size_t dn)
+char * /* ensure enough space for plus more bytes */
+blob_prepare(Blob *bp, size_t plus)
 {
   assert(bp != 0);
   /* nothing to do if allocated and enough room: */
-  if (bp->buf && HASROOM(bp, dn))
-    return bp->buf + bp->n;
+  if (bp->buf && HASROOM(bp, plus))
+    return bp->buf + bp->len;
 
-  size_t requested = bp->n + dn + 1; /* +1 for \0 */
+  size_t requested = bp->len + plus + 1; /* +1 for \0 */
   size_t standard = GROWFUNC(SIZE(bp));
   size_t newsize = MAX(requested, standard);
 
   newsize = (newsize+1)&~1; /* round up to even */
   char *ptr = realloc(bp->buf, newsize);
   if (!ptr) goto nomem;
-  memset(ptr + bp->n, 0, newsize - bp->n);
+  memset(ptr + bp->len, 0, newsize - bp->len);
 
   bp->buf = ptr;
-  bp->a = newsize;
-  return bp->buf + bp->n; /* ptr to new part of blob */
+  bp->size = newsize;
+  return bp->buf + bp->len; /* ptr to new part of blob */
 
 nomem:
   SETFAILED(bp);
@@ -130,15 +129,15 @@ nomem:
 }
 
 
-void  /* make dn bytes longer, after prepare(dn) */
-blob_addlen(Blob *bp, size_t dn)
+void  /* make plus bytes longer, after prepare(plus) */
+blob_addlen(Blob *bp, size_t plus)
 {
   assert(bp && bp->buf);
-  size_t newlen = bp->n + dn;
-  size_t max = bp->a - 1;
+  size_t newlen = bp->len + plus;
+  size_t max = bp->size - 1;
   if (newlen > max) newlen = max;
-  bp->n = newlen;
-  bp->buf[bp->n] = '\0';
+  bp->len = newlen;
+  bp->buf[bp->len] = '\0';
 }
 
 
@@ -147,9 +146,21 @@ blob_trunc(Blob *bp, size_t n)
 {
   assert(bp != 0);
   if (!bp->buf) return;  /* not allocated */
-  if (n > bp->n) return; /* cannot enlarge */
-  bp->n = n;
+  if (n > bp->len) return; /* cannot enlarge */
+  bp->len = n;
   bp->buf[n] = '\0';
+}
+
+int  /* return neg/0/pos if bp is </=/> bq */
+blob_compare(Blob *bp, Blob *bq)
+{
+  size_t np = blob_len(bp);
+  size_t nq = blob_len(bq);
+  size_t n = np < nq ? np : nq;
+  int r = memcmp(blob_str(bp), blob_str(bq), n);
+  if (r != 0) return r;
+  if (np == nq) return 0;
+  return np > nq ? 1 : -1;
 }
 
 
@@ -159,10 +170,10 @@ blob_trimend(Blob *bp)
   assert(bp != 0);
   if (!bp->buf) return;
   char *z = bp->buf;
-  size_t n = bp->n;
+  size_t n = bp->len;
   while (n > 0 && ISSPACE(z[n-1])) n--;
-  bp->n = n;
-  bp->buf[bp->n] = '\0';
+  bp->len = n;
+  bp->buf[bp->len] = '\0';
 }
 
 
@@ -171,8 +182,8 @@ blob_endline(Blob *bp)
 {
   assert(bp != 0);
   if (!bp->buf) return;  /* not allocated */
-  if (!bp->n) return;  /* empty, no line to end */
-  if (bp->buf[bp->n-1] != '\n')
+  if (!bp->len) return;  /* empty, no line to end */
+  if (bp->buf[bp->len-1] != '\n')
     blob_addchar(bp, '\n');
 }
 
@@ -185,7 +196,7 @@ blob_free(Blob *bp)
     free(bp->buf);
     bp->buf = 0;
   }
-  bp->n = bp->a = 0;
+  bp->len = bp->size = 0;
 }
 
 
@@ -216,6 +227,8 @@ static void out_of_memory(void) { longjmp(jbuf, 1); }
 #define TERMINATED(bp) (0 == (bp)->buf[blob_len(bp)])
 #define INVARIANTS(bp) (LENLTSIZE(bp) && TERMINATED(bp))
 
+#define blob_setstr(bp, s) blob_clear((bp)); blob_addstr((bp), (s))
+
 int  /* run self checks; return true iff all ok */
 blob_check(int harder)
 {
@@ -226,32 +239,34 @@ blob_check(int harder)
 
   Blob blob = BLOB_INIT;
   Blob *bp = &blob;
+  Blob other = BLOB_INIT;
 
   INFO("sizeof(Blob): %zu bytes", sizeof(Blob));
 
   TEST("init len = 0", blob_len(bp) == 0);
+  TEST("init eq \"\"", STREQ(blob_str(bp), ""));
 
   blob_addbuf(bp, "Hellooo", 5);
-  TEST("addbuf", STREQ(blob_buf(bp), "Hello") && INVARIANTS(bp));
+  TEST("addbuf", STREQ(blob_str(bp), "Hello") && INVARIANTS(bp));
 
   blob_addchar(bp, ',');
   blob_addchar(bp, ' ');
-  TEST("addchar", STREQ(blob_buf(bp), "Hello, ") && INVARIANTS(bp));
+  TEST("addchar", STREQ(blob_str(bp), "Hello, ") && INVARIANTS(bp));
 
   blob_addstr(bp, "World!");
-  TEST("addstr", STREQ(blob_buf(bp), "Hello, World!") && INVARIANTS(bp));
+  TEST("addstr", STREQ(blob_str(bp), "Hello, World!") && INVARIANTS(bp));
 
   blob_trunc(bp, 5);
-  TEST("trunc 5", STREQ(blob_buf(bp), "Hello") && INVARIANTS(bp));
+  TEST("trunc 5", STREQ(blob_str(bp), "Hello") && INVARIANTS(bp));
 
   blob_addfmt(bp, "+%d-%d=%s", 3, 4, "konfus");
-  TEST("addfmt", STREQ(blob_buf(bp), "Hello+3-4=konfus") && INVARIANTS(bp));
+  TEST("addfmt", STREQ(blob_str(bp), "Hello+3-4=konfus") && INVARIANTS(bp));
 
   blob_byte(bp, 10) = 'Q';
   TEST("byte", blob_byte(bp, 10) == 'Q');
 
   blob_trunc(bp, 0);
-  TEST("trunc 0 (buf)", STREQ(blob_buf(bp), "") && INVARIANTS(bp));
+  TEST("trunc 0 (buf)", STREQ(blob_str(bp), "") && INVARIANTS(bp));
   TEST("trunc 0 (len)", blob_len(bp) == 0 && INVARIANTS(bp));
 
   for (i = 0; i < 26; i++) {
@@ -259,7 +274,7 @@ blob_check(int harder)
     blob_addchar(bp, "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[i]);
   }
   TEST("52*addchar", blob_len(bp) == 52 && INVARIANTS(bp) &&
-    STREQ(blob_buf(bp), "aAbBcCdDeEfFgGhHiIjJkKlLmMnNoOpPqQrRsStTuUvVwWxXyYzZ"));
+    STREQ(blob_str(bp), "aAbBcCdDeEfFgGhHiIjJkKlLmMnNoOpPqQrRsStTuUvVwWxXyYzZ"));
 
   blob_trunc(bp, 0);
   TEST("trunc 0", blob_len(bp) == 0 && INVARIANTS(bp));
@@ -304,8 +319,24 @@ blob_check(int harder)
   blob_addstr(bp, "World!");
   blob_trunc(bp, 6);
   blob_addfmt(bp, "User #%d", 123);
-  INFO("%s (len=%zu)", blob_buf(bp), blob_len(bp));
-  TEST("sample", STREQ(blob_buf(bp), "Hello User #123") && INVARIANTS(bp));
+  INFO("%s (len=%zu)", blob_str(bp), blob_len(bp));
+  TEST("sample", STREQ(blob_str(bp), "Hello User #123") && INVARIANTS(bp));
+
+  blob_free(bp);
+
+  blob_setstr(bp, "baz");
+  blob_setstr(&other, "baz");
+  TEST("compare1", blob_compare(bp, bp) == 0);
+  TEST("compare2", blob_compare(bp, &other) == 0);
+  blob_setstr(&other, "bar");
+  TEST("compare3", blob_compare(bp, &other) > 0);
+  TEST("compare4", blob_compare(&other, bp) < 0);
+  blob_setstr(&other, "bazaar");
+  TEST("compare5", blob_compare(bp, &other) < 0);
+  TEST("compare6", blob_compare(&other, bp) > 0);
+  blob_clear(bp);
+  blob_clear(&other);
+  TEST("compare0", blob_compare(bp, &other) == 0);
 
   blob_free(bp);
 
@@ -355,6 +386,9 @@ blob_check(int harder)
     blob_nomem(oldhandler);
   }
 #endif
+
+  blob_free(bp);
+  blob_free(&other);
 
   return numpass > 0 && numfail == 0;
 }

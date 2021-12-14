@@ -31,6 +31,8 @@ p = blob_prepare(bp, size_t dn);
 blob_addlen(bp, size_t dn);
 blob_trunc(bp, size_t n);
 
+i = blob_compare(bp, Blob *bq);  /* like strcmp(3) */
+
 blob_free(bp);          /* free memory, go to unallocated state */
 blob_nomem(handler);    /* register out-of-memory handler */
 blob_check(harder);     /* self checks, return true iff all ok */
@@ -86,6 +88,7 @@ call **blob_addlen** to add those new bytes to the blob.
 **blob_trunc** truncates the blob to the given length, which
 must be no more than the current length. The library guarantees
 that the buffer is again zero-terminated after truncation.
+**blob_clear** is equivalent to truncating to length zero.
 
 **blob_free** empties the blob, releases the memory, and
 returns the blob to the unallocated state (which also clears

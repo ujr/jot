@@ -1,3 +1,4 @@
+
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,6 +25,19 @@ strcopy(const char *s)
   char *t = malloc(l+1);
   if (!t) return 0;
   return memcpy(t, s, l+1);
+}
+
+
+/** strncasecmp(3), which is not in ANSI C */
+int
+strnicmp(const char *s, const char *t, size_t n)
+{
+  if (n==0) return 0;
+  n--; /* do last comparison after the loop */
+  while (n && *s && *t && (*s == *t || toLower(*s) == toLower(*t))) {
+    s++; t++; n--;
+  }
+  return toLower(*s) - toLower(*t);
 }
 
 
@@ -54,3 +68,21 @@ basename(const char *path)
 
   return path;
 }
+
+
+/*
+** Avoid <ctype.h> here as we strictly assume UTF-8 encoded Unicode
+** and want to avoid potential locale issues. Tempting to write these
+** as macros, but side effects due to multiple evaluation are far too
+** likely, so we stick with functions.
+*/
+
+int isSpace(int c) { return c==' ' || ('\t'<=c && c<='\r'); }
+int isDigit(int c) { return '0'<=c && c<='9'; }
+int isLower(int c) { return 'a'<=c && c<='z'; }
+int isUpper(int c) { return 'A'<=c && c<='Z'; }
+int isAlpha(int c) { return ('a'<=c && c<='z') || ('A'<=c && c<='Z'); }
+int isAlnum(int c) { return ('a'<=c && c<='z') || ('A'<=c && c<='Z') || ('0'<=c && c<='9'); }
+
+int toLower(int c) { return isUpper(c) ? c - 'A' + 'a' : c; }
+int toUpper(int c) { return isLower(c) ? c - 'a' + 'A' : c; }
