@@ -21,6 +21,7 @@
 #include "jotlib.h"
 #include "log.h"
 #include "blob.h"
+#include "mkdn.h"
 #include "pikchr.h"
 #include "utils.h"
 #include "walkdir.h"
@@ -467,6 +468,26 @@ jot_pikchr(lua_State *L)
 }
 
 
+/* Lua function: markdown(str) */
+static int
+jot_markdown(lua_State *L)
+{
+  Blob blob = BLOB_INIT;
+  Blob *pout = &blob;
+  const char *s;
+  size_t len;
+
+  s = luaL_checklstring(L, 1, &len);
+  mkdnhtml(pout, s, len, 0);
+
+  s = blob_str(pout);
+  len = blob_len(pout);
+  lua_pushlstring(L, s, len);
+  blob_free(pout);
+  return 1;
+}
+
+
 static int
 jot_checkblob(lua_State *L)
 {
@@ -509,6 +530,7 @@ static const struct luaL_Reg jotlib[] = {
   {"tempdir",   jot_tempdir},
   {"walkdir",   jot_walkdir},
   {"pikchr",    jot_pikchr},
+  {"markdown",  jot_markdown},
   {"checkblob", jot_checkblob},
   {0, 0}
 };
