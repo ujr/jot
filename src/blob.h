@@ -38,12 +38,12 @@ void blob_trunc(Blob *bp, size_t len);
 #define blob_clear(bp) blob_trunc((bp), 0);
 
 int blob_compare(Blob *bp, Blob *bq);
-void blob_trimend(Blob *bp); // remove trailing white space
-void blob_endline(Blob *bp); // add final newline, if missing
+void blob_trimend(Blob *bp);  /* remove trailing white space */
+void blob_endline(Blob *bp);  /* add final newline, if missing */
 
 void blob_free(Blob *bp);
 void (*blob_nomem(void (*handler)(void)))(void);
 
-int blob_check(int harder); // self checks, return true iff all ok
+int blob_check(int harder);  /* self checks, return true iff all ok */
 
 #endif

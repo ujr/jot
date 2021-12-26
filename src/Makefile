@@ -17,7 +17,7 @@ pikchr: pikchr.c
 	$(CC) -DPIKCHR_SHELL -o $@ $? -lm
 
 mkdn: mkdn.h mkdn.c mkdnhtml.c
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ -DMKDN_SHELL mkdn.c mkdnhtml.c blob.c utils.c log.c pikchr.c -lm
+	$(CC) -Wall -Wextra -O0 -g -o $@ -DMKDN_SHELL mkdn.c mkdnhtml.c blob.c utils.c log.c pikchr.c -lm
 
 clean:
 	rm -f *.o jot pikchr
