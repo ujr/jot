@@ -43,22 +43,26 @@
 #define TOUPPER(c) (ISLOWER(c) ? (c) - 'a' + 'A' : (c))
 
 #define UNUSED(x) ((void)(x))
+#define OUT_OF_MEMORY 0
 #define INVALID_HTMLBLOCK_KIND 0
+#define MIN(a,b) ((a) < (b) ? (a) : (b))
 
 /** length of array (number of items) */
 #define ARLEN(a) (sizeof(a)/sizeof((a)[0]))
 
 
-typedef struct renderer Renderer;
+typedef struct parser Parser;
 
 typedef size_t (*SpanProc)(
   Blob *out, const char *text, size_t size,
-  size_t prefix, Renderer *rndr);
+  size_t prefix, Parser *parser);
 
-struct renderer {
-  struct markdown cb;
+struct parser {
+  struct markdown render;
   void *udata;
   int nesting_depth;
+  int in_link;               /* to inhibit links within links */
+  Blob linkdefs;             /* collected link definitions */
   Blob *blob_pool[32];
   size_t pool_index;
   SpanProc active_chars[128];
@@ -67,6 +71,25 @@ struct renderer {
   const struct tagname *styletag;
   const struct tagname *textareatag;
 };
+
+
+typedef struct slice {
+  const char *s;
+  size_t n;
+} Slice;
+
+
+static Slice slice(const char *s, size_t len) {
+  Slice slice = { s, len };
+  return slice;
+}
+
+
+typedef struct linkdef {
+  Slice id;
+  Slice link;
+  Slice title;
+} Linkdef;
 
 
 /** html block tags, ordered by length, then lexicographically */
@@ -144,18 +167,18 @@ static const struct tagname {
 
 
 static int
-tagnamecmp(const void *a, const void *b)
+tagname_cmp(const void *a, const void *b)
 {
-  const struct tagname *tna = a;
-  const struct tagname *tnb = b;
-  if (tna->len < tnb->len) return -1;
-  if (tna->len > tnb->len) return +1;
-  return strnicmp(tna->name, tnb->name, tna->len);
+  const struct tagname *pa = a;
+  const struct tagname *pb = b;
+  if (pa->len < pb->len) return -1;
+  if (pa->len > pb->len) return +1;
+  return strnicmp(pa->name, pb->name, pa->len);
 }
 
 
 static const struct tagname *
-tagnamefind(const char *text, size_t size)
+tagname_find(const char *text, size_t size)
 {
   struct tagname key;
   size_t nmemb = ARLEN(tagnames);
@@ -168,7 +191,7 @@ tagnamefind(const char *text, size_t size)
 
   key.name = text;
   key.len = j;
-  return bsearch(&key, tagnames, nmemb, msize, tagnamecmp);
+  return bsearch(&key, tagnames, nmemb, msize, tagname_cmp);
 }
 
 
@@ -196,6 +219,38 @@ taglength(const char *text, size_t size)
   }
   if (len >= size || text[len] != '>') return 0;
   return len+1;
+}
+
+
+static int
+linkdef_cmp(const void *a, const void *b)
+{
+  const struct linkdef *pa = a;
+  const struct linkdef *pb = b;
+  if (pa->id.n < pb->id.n) return -1;
+  if (pa->id.n > pb->id.n) return +1;
+  return strnicmp(pa->id.s, pb->id.s, pa->id.n);
+}
+
+
+/** find link by its label; return true iff found */
+static int
+linkdef_find(
+  const char *text, size_t size, Parser *parser,
+  struct slice *link, struct slice *title)
+{
+  struct linkdef key, *ptr;
+  size_t msize = sizeof(struct linkdef);
+  size_t nmemb = blob_len(&parser->linkdefs)/msize;
+  if (!nmemb) return 0;
+  key.id = slice(text, size);
+  key.link = slice(0, 0);
+  key.title = slice(0, 0);
+  ptr = bsearch(&key, blob_buf(&parser->linkdefs), nmemb, msize, linkdef_cmp);
+  if (!ptr) return 0;
+  if (link) *link = ptr->link;
+  if (title) *title = ptr->title;
+  return 1;
 }
 
 
@@ -247,39 +302,100 @@ trymail:
 }
 
 
-typedef struct slice {
-  const char *s;
-  size_t n;
-} Slice;
-
-
-static Slice slice(const char *s, size_t len) {
-  Slice slice = { s, len };
-  return slice;
+/** scan link label like [foo]; return length or zero */
+static size_t
+scan_label(const char *text, size_t size)
+{
+  size_t j = 0;
+  if (j >= size || text[j] != '[') return 0;
+  for (++j; j < size; j++) {
+    if (text[j] == ']') break;
+    if (text[j] == '\\') j++;
+  }
+  if (j >= size || text[j] != ']') return 0;
+  return j+1;
 }
 
 
-typedef struct linkdef {
-  Slice id;
-  Slice link;
-  Slice title;
-} Linkdef;
+/** scan link url and title; return length or 0 on failure */
+static size_t
+scan_link_and_title(const char *text, size_t size,
+  struct slice *link, struct slice *title)
+{
+  size_t linkofs, linkend;
+  size_t titlofs, titlend;
+  size_t j = 0, end;
+
+  if (j < size && text[j] == '<') {
+    /* link in angle brackets, no line endings, no unescaped < or > */
+    linkofs = ++j;
+    for (; j < size && text[j] != '>'; j++) {
+      if (text[j] == '\\') { j++; continue; }
+      if (text[j] == '\n' || text[j] == '\r') return 0;
+    }
+    if (j >= size || text[j] != '>') return 0;
+    linkend = j++;
+  }
+  else {
+    /* plain link, no cntrl, no space, parens only if escaped or balanced */
+    int level = 1;
+    linkofs = j;
+    for (; j < size && text[j] != ' ' && !ISCNTRL(text[j]); j++) {
+      if (text[j] == '\\') { j++; continue; }
+      else if (text[j] == '(') level++;
+      else if (text[j] == ')')
+        if (--level <= 0) break;
+    }
+    linkend = j;
+  }
+  end = j;
+
+  /* skip \s*\n?\s*, that is, white space but at most one newline: */
+  while (j < size && ISBLANK(text[j])) j++;
+  if (j < size && (text[j] == '\n' || text[j] == '\r')) j++;
+  if (j < size && text[j] == '\n' && text[j-1] == '\r') j++;
+  while (j < size && ISBLANK(text[j])) j++;
+
+  /* optional title, may contain newlines, but no blank line: */
+  titlofs = titlend = 0;
+  if (j < size && (text[j] == '"' || text[j] == '\'' || text[j] == '(')) {
+    char delim = text[j++], blank = 0;
+    if (delim == '(') delim = ')';
+    titlofs = j;
+    for (; j < size && text[j] != delim; j++) {
+      if (text[j] == '\\') { j++; continue; }
+      if (text[j] == '\n' || text[j] == '\r') {
+        if (blank) return 0; /* empty line in title not allowed */
+        blank = 1;
+      }
+      else if (!ISBLANK(text[j])) blank = 0;
+    }
+    titlend = j;
+    if (titlend < titlofs || text[j] != delim) return 0;
+    end = ++j; /* consume the closing delim */
+  }
+
+  if (link) *link = slice(text+linkofs, linkend-linkofs);
+  if (title) *title = slice(text+titlofs, titlend-titlofs);
+
+  return end;
+}
 
 
 static bool
-too_deep(Renderer *rndr)
+too_deep(Parser *parser)
 {
-  return rndr->nesting_depth > 100;
+  return parser->nesting_depth > 100;
 }
 
 
 static Blob*
-pool_get(Renderer *rndr)
+pool_get(Parser *parser)
 {
   static const Blob empty = BLOB_INIT;
   Blob *ptr;
-  if (rndr->pool_index > 0)
-    return rndr->blob_pool[--rndr->pool_index];
+  if (parser->pool_index > 0)
+    return parser->blob_pool[--parser->pool_index];
   ptr = malloc(sizeof(*ptr));
   if (!ptr) {
     perror("malloc");
@@ -291,12 +407,12 @@ pool_get(Renderer *rndr)
 
 
 static void
-pool_put(Renderer *rndr, Blob *blob)
+pool_put(Parser *parser, Blob *blob)
 {
   if (!blob) return;
-  if (rndr->pool_index < ARLEN(rndr->blob_pool)) {
+  if (parser->pool_index < ARLEN(parser->blob_pool)) {
     blob_clear(blob);
-    rndr->blob_pool[rndr->pool_index++] = blob;
+    parser->blob_pool[parser->pool_index++] = blob;
   }
   else {
     log_debug("mkdn: blob pool exhausted; freeing blob instead of caching");
@@ -307,7 +423,7 @@ pool_put(Renderer *rndr, Blob *blob)
 
 
 static void
-parse_inlines(Blob *out, const char *text, size_t size, Renderer *rndr)
+parse_inlines(Blob *out, const char *text, size_t size, Parser *parser)
 {
   SpanProc action;
   size_t i, j, n;
@@ -316,18 +432,18 @@ parse_inlines(Blob *out, const char *text, size_t size, Renderer *rndr)
   while (j < size) {
     for (; j < size; j++) {
       unsigned uc = ((unsigned) text[j]) & 0x7F;
-      action = rndr->active_chars[uc];
+      action = parser->active_chars[uc];
       if (action) break;
     }
     if (j > i) {
-      if (rndr->cb.text)
-        rndr->cb.text(out, text+i, j-i, rndr->udata);
+      if (parser->render.text)
+        parser->render.text(out, text+i, j-i, parser->udata);
       else blob_addbuf(out, text+i, j-i);
       i = j;
     }
     if (j >= size) break;
     assert(action != 0);
-    n = action(out, text+j, size-j, j, rndr);
+    n = action(out, text+j, size-j, j, parser);
     if (n) { j += n; i = j; } else j += 1;
   }
 }
@@ -335,14 +451,14 @@ parse_inlines(Blob *out, const char *text, size_t size, Renderer *rndr)
 
 static size_t
 do_escape(
-  Blob *out, const char *text, size_t size, size_t prefix, Renderer *rndr)
+  Blob *out, const char *text, size_t size, size_t prefix, Parser *parser)
 {
   UNUSED(prefix);
 
   /* by CM 2.4, backslash escapes only punctuation, otherwise literal */
   if (size > 1 && ISPUNCT(text[1])) {
-    if (rndr->cb.text)
-      rndr->cb.text(out, text+1, 1, rndr->udata);
+    if (parser->render.text)
+      parser->render.text(out, text+1, 1, parser->udata);
     else blob_addbuf(out, text+1, 1);
     return 2;
   }
@@ -366,7 +482,7 @@ do_escapes(Blob *out, const char *text, size_t size)
     if (j >= size) break;
     assert(i == j);
     assert(text[j] == '\\');
-    j += 1; /* leave i to add \ to run of text */
+    j += 1; /* leave i unchanged to add \ to run of text */
     if (j < size && ISPUNCT(text[j])) {
       blob_addchar(out, text[j]);
       i = j += 1;
@@ -377,7 +493,7 @@ do_escapes(Blob *out, const char *text, size_t size)
 
 static size_t
 do_entity(
-  Blob *out, const char *text, size_t size, size_t prefix, Renderer *rndr)
+  Blob *out, const char *text, size_t size, size_t prefix, Parser *parser)
 {
   /* by CM 2.5, only valid HTML5 entity names must be parsed; here we
      only parse for syntactical correctness and let the callback decide: */
@@ -403,37 +519,41 @@ do_entity(
   }
   if (j < size && text[j] == ';') j++;
   else return 0;
-  assert(rndr->cb.entity != 0);
-  return rndr->cb.entity(out, text, j, rndr->udata) ? j : 0;
+  assert(parser->render.entity != 0);
+  return parser->render.entity(out, text, j, parser->udata) ? j : 0;
 }
 
 
 static size_t
 do_linebreak(
-  Blob *out, const char *text, size_t size, size_t prefix, Renderer *rndr)
+  Blob *out, const char *text, size_t size, size_t prefix, Parser *parser)
 {
   size_t extra = (text[0] == '\r' && size > 1 && text[1] == '\n') ? 1 : 0;
 
   /* look back, if possible, for two blanks */
   if (prefix >= 2 && text[-1] == ' ' && text[-2] == ' ') {
     blob_trimend(out); blob_addchar(out, ' ');
-    assert(rndr->cb.linebreak != 0);
-    return rndr->cb.linebreak(out, rndr->udata) ? 1 + extra : 0;
+    assert(parser->render.linebreak != 0);
+    return parser->render.linebreak(out, parser->udata) ? 1 + extra : 0;
   }
 
   /* NB. backslash newline is NOT handled by do_escape */
   if (prefix >= 1 && text[-1] == '\\') {
     blob_trunc(out, blob_len(out)-1); blob_addchar(out, ' ');
-    assert(rndr->cb.linebreak != 0);
-    return rndr->cb.linebreak(out, rndr->udata) ? 1 + extra : 0;
+    assert(parser->render.linebreak != 0);
+    return parser->render.linebreak(out, parser->udata) ? 1 + extra : 0;
   }
-  return 0;
+
+  /* trim trailing space and preserve "soft" breaks (CM 6.8): */
+  blob_trimend(out);
+  blob_addchar(out, '\n');
+  return 1 + extra;
 }
 
 
 static size_t
 do_codespan(
-  Blob *out, const char *text, size_t size, size_t prefix, Renderer *rndr)
+  Blob *out, const char *text, size_t size, size_t prefix, Parser *parser)
 {
   size_t i, j, end, oticks, cticks;
   char delim;
@@ -458,14 +578,14 @@ do_codespan(
     i++; j--;
   }
 
-  assert(rndr->cb.codespan != 0);
-  return rndr->cb.codespan(out, text+i, j-i, rndr) ? end : 0;
+  assert(parser->render.codespan != 0);
+  return parser->render.codespan(out, text+i, j-i, parser) ? end : 0;
 }
 
 
 static size_t
 do_anglebrack(
-  Blob *out, const char *text, size_t size, size_t prefix, Renderer *rndr)
+  Blob *out, const char *text, size_t size, size_t prefix, Parser *parser)
 {
   /* autolink -or- raw html tag; see CM 6.5 and 6.6 */
   char type;
@@ -473,30 +593,125 @@ do_anglebrack(
   UNUSED(prefix);
   len = taglength(text, size);
   if (len) {
-    if (rndr->cb.htmltag)
-      rndr->cb.htmltag(out, text, len, rndr->udata);
+    if (parser->render.htmltag)
+      parser->render.htmltag(out, text, len, parser->udata);
     return len;
   }
   len = scan_autolink(text, size, &type);
   if (len) {
-    if (rndr->cb.autolink)
-      rndr->cb.autolink(out, type, text+1, len-2, rndr->udata);
+    if (parser->render.autolink)
+      parser->render.autolink(out, type, text+1, len-2, parser->udata);
     return len;
   }
   return 0;
 }
 
 
+// TODO hook img to ! and look forward (not [ and backwards)
+static size_t
+do_link(
+  Blob *out, const char *text, size_t size, size_t prefix, Parser *parser)
+{
+  /* Types of links:
+      1. inline:    [text](dest "title")
+      2. reference: [text][ref]
+      3. collapsed: [text][]     let ref = text
+      4. shortcut:  [text]       let ref = text */
+  size_t j = 0, len, textend;
+  struct slice linkslice, titleslice;
+  Blob *body, *link, *title;
+  int img, level, ok = 0;
+
+  if (parser->in_link > 0) return 0;
+  img = prefix > 0 && text[-1] == '!' && (prefix < 2 || text[-2] != '\\');
+  if (img && !parser->render.image) return 0;
+  if (!img && !parser->render.link) return 0;
+
+  /* look for closing bracket: */
+  for (level = 1, ++j; j < size; j++) {
+    if (text[j] == '\\') { j++; continue; }
+    if (text[j] == '[') level += 1;
+    else if (text[j] == ']') {
+      if (--level <= 0) break;
+    }
+  }
+  if (j >= size) return 0;  /* unmatched '[' */
+  textend = j++;  /* eat closing bracket */
+
+  /* inline or reference link must follow immediately: */
+  if (j < size && text[j] == '(') {
+    /* inline link */
+    for (++j; j < size && ISBLANK(text[j]); j++);
+    len = scan_link_and_title(text+j, size-j, &linkslice, &titleslice);
+    if (!len && text[j] != ')') return 0; /* allow empty () */
+    j += len;
+    while (j < size && ISBLANK(text[j])) j++;
+    if (j >= size || text[j] != ')') return 0;
+    j++; /* eat closing paren */
+  }
+  else if (j < size && text[j] == '[') {
+    len = scan_label(text+j, MIN(size-j, 999));
+    if (!len) return 0;
+    // TODO process escapes (?) and trim
+    if (len > 2) { /* not [] */
+      if (!linkdef_find(text+j+1, len-2, parser, &linkslice, &titleslice))
+        return 0;
+    }
+    else {
+      if (!linkdef_find(text+1, textend-1, parser, &linkslice, &titleslice))
+        return 0;
+    }
+    j += len; /* consume the ']' */
+  }
+  else {
+    /* shortcut link */
+    if (!linkdef_find(text+1, textend-1, parser, &linkslice, &titleslice))
+      return 0;
+  }
+
+  body = pool_get(parser);
+  link = pool_get(parser);
+  title = pool_get(parser);
+
+  /* parse body inlines only for link, not for image: */
+  if (img) blob_addbuf(body, text+1, textend-1);
+  else {
+    parser->in_link++;
+    parse_inlines(body, text+1, textend-1, parser);
+    parser->in_link--;
+  }
+
+  /* process escapes: */
+  do_escapes(link, linkslice.s, linkslice.n);
+  do_escapes(title, titleslice.s, titleslice.n);
+
+  if (img) {
+    if (blob_len(out) > 0 && blob_byte(out, blob_len(out)-1))
+      blob_trunc(out, blob_len(out)-1);
+    assert(parser->render.image != 0);
+    ok = parser->render.image(out, link, title, body, parser->udata);
+  }
+  else {
+    assert(parser->render.link != 0);
+    ok = parser->render.link(out, link, title, body, parser->udata);
+  }
+
+  pool_put(parser, title);
+  pool_put(parser, link);
+  pool_put(parser, body);
+  return ok ? j : 0;
+}
+
 // TODO other span processors
 
 
 static void
-parse_block(Blob *out, const char *text, size_t size, Renderer *rndr);
+parse_block(Blob *out, const char *text, size_t size, Parser *parser);
 
 
 /** scan past next newline; return #bytes scanned */
 static size_t
-scanline(const char *text, size_t size) // TODO rename skipline?
+scanline(const char *text, size_t size)
 {
   size_t i = 0;
   while (i < size && text[i] != '\n' && text[i] != '\r') i++;
@@ -537,70 +752,6 @@ preblanks(const char *text, size_t size)
 }
 
 
-/** link definition: [label]: link "title" */
-static size_t
-is_linkdef(const char *text, size_t size, Linkdef *pdef)
-{
-  size_t i = 0, end;
-  size_t idofs, idend;
-  size_t linkofs, linkend;
-  size_t titlofs, titlend;
-
-  // leading space: at most 3 blanks, optional
-  if (size < 4) return 0; // too short for a label defn
-  while (i < 4 && text[i] == ' ') i += 1;
-  if (i >= 4) return 0; // too much indented
-
-  if (text[i] != '[') return 0;
-  idofs = ++i;
-  while (i < size && text[i] != '\n' && text[i] != '\r' && text[i] != ']') i++;
-  if (i >= size || text[i] != ']') return 0;
-  idend = i++;
-
-  // colon must immediately follow the bracket
-  if (i >= size || text[i] != ':') return 0;
-  // any amount of optional space, but at most one newline
-  for (++i; i < size && ISBLANK(text[i]); i++);
-  if (i >= size) return 0;
-  if (text[i] == '\n' || text[i] == '\r') i++;
-  if (i >= size) return 0;
-  if (text[i] == '\n' && text[i-1] == '\r') i++;
-  while (i < size && ISBLANK(text[i])) i++;
-
-  // the link itself may be in angle brackets but contains no space
-  if (i < size && text[i] == '<') i++;
-  linkofs = i;
-  while (i < size && !ISSPACE(text[i]) && text[i] != '>') i++;
-  linkend = text[i-1] == '>' ? i-1 : i;
-
-  // optional title, may on next line
-  while (i < size && ISBLANK(text[i])) i++;
-  if (i < size && (text[i] == '\n' || text[i] == '\r')) i++;
-  if (i < size && text[i] == '\n' && text[i-1] == '\r') i++;
-  end = i;
-  while (i < size && ISBLANK(text[i])) i++;
-
-  titlofs = titlend = 0;
-  if (i < size && (text[i] == '"' || text[i] == '\'' || text[i] == '(')) {
-    char delim = text[i++];
-    titlofs = i;
-    while (i < size && text[i] != '\n' && text[i] != '\r') i++;
-    end = (i+1 < size && text[i]=='\r' && text[i+1] == '\n') ? i+2 : i+1;
-    for (--i; i > titlofs && ISBLANK(text[i]); i--);
-    titlend = i;
-    if (i == titlofs || text[i] != delim) return 0;
-  }
-
-  if (pdef) {
-    pdef->id = slice(text+idofs, idend-idofs);
-    pdef->link = slice(text+linkofs, linkend-linkofs);
-    pdef->title = slice(text+titlofs, titlend-titlofs);
-  }
-
-  return end;
-}
-
-
 /** check for a blank line; return line length or 0 */
 static size_t
 is_blankline(const char *text, size_t size)
@@ -612,6 +763,47 @@ is_blankline(const char *text, size_t size)
   if (i < size) i++;
   if (i < size && text[i] == '\n' && text[i-1] == '\r') i++;
   return i;
+}
+
+
+/** link definition: [label]: link "title" */
+static size_t
+is_linkdef(const char *text, size_t size, Linkdef *pdef)
+{
+  size_t idofs, idend;
+  struct slice link, title;
+  size_t len, j = preblanks(text, size);
+
+  len = scan_label(text+j, size-j);
+  if (!len) return 0;
+  idofs = j+1;
+  j += len;
+  idend = j-1;
+
+  /* colon must immediately follow the bracket */
+  if (j >= size || text[j] != ':') return 0;
+  // any amount of optional space, but at most one newline
+  for (++j; j < size && ISBLANK(text[j]); j++);
+  if (j >= size) return 0;
+  if (text[j] == '\n' || text[j] == '\r') j++;
+  if (j >= size) return 0;
+  if (text[j] == '\n' && text[j-1] == '\r') j++;
+  while (j < size && ISBLANK(text[j])) j++;
+
+  len = scan_link_and_title(text+j, size-j, &link, &title);
+  if (!len) return 0;
+  else j += len;
+  len = is_blankline(text+j, size-j);
+  if (!len) return 0; /* junk after link def */
+  else j += len;
+
+  if (pdef) {
+    pdef->id = slice(text+idofs, idend-idofs);
+    pdef->link = link;
+    pdef->title = title;
+  }
+
+  return j;
 }
 
 
@@ -662,7 +854,7 @@ is_atxline(const char *text, size_t size, int *plevel)
 
 /** parse atx heading; return #chars scanned if found, else 0 */
 static size_t
-parse_atxheading(Blob *out, const char *text, size_t size, Renderer *rndr)
+parse_atxheading(Blob *out, const char *text, size_t size, Parser *parser)
 {
   int level;
   size_t start, end, len;
@@ -681,11 +873,11 @@ parse_atxheading(Blob *out, const char *text, size_t size, Renderer *rndr)
   }
   else if (i == start) end = i;
 
-  if (rndr->cb.heading) {
-    Blob *title = pool_get(rndr);
-    parse_inlines(title, text+start, end-start, rndr);
-    rndr->cb.heading(out, level, title, rndr->udata);
-    pool_put(rndr, title);
+  if (parser->render.heading) {
+    Blob *title = pool_get(parser);
+    parse_inlines(title, text+start, end-start, parser);
+    parser->render.heading(out, level, title, parser->udata);
+    pool_put(parser, title);
   }
   return len;
 }
@@ -703,11 +895,11 @@ is_codeline(const char *text, size_t size)
 
 
 static size_t
-parse_codeblock(Blob *out, const char *text, size_t size, Renderer *rndr)
+parse_codeblock(Blob *out, const char *text, size_t size, Parser *parser)
 {
   static const char *nolang = "";
   size_t i, i0, len, blankrun = 0;
-  Blob *temp = pool_get(rndr);
+  Blob *temp = pool_get(parser);
 
   for (i = 0; i < size; ) {
     len = is_codeline(text+i, size-i);
@@ -730,9 +922,9 @@ parse_codeblock(Blob *out, const char *text, size_t size, Renderer *rndr)
     blob_addchar(temp, '\n');
   }
 
-  if (rndr->cb.codeblock)
-    rndr->cb.codeblock(out, nolang, temp, rndr->udata);
-  pool_put(rndr, temp);
+  if (parser->render.codeblock)
+    parser->render.codeblock(out, nolang, temp, parser->udata);
+  pool_put(parser, temp);
   return i;
 }
 
@@ -750,10 +942,10 @@ is_quoteline(const char *text, size_t size)
 
 
 static size_t
-parse_blockquote(Blob *out, const char *text, size_t size, Renderer *rndr)
+parse_blockquote(Blob *out, const char *text, size_t size, Parser *parser)
 {
   size_t i, i0, len;
-  Blob *temp = pool_get(rndr);
+  Blob *temp = pool_get(parser);
 
   for (i = 0; i < size; ) {
     len = is_quoteline(text+i, size-i);
@@ -773,17 +965,17 @@ parse_blockquote(Blob *out, const char *text, size_t size, Renderer *rndr)
     blob_addchar(temp, '\n');
   }
 
-  if (!too_deep(rndr)) {
-    Blob *inner = pool_get(rndr);
-    parse_block(inner, blob_str(temp), blob_len(temp), rndr);
-    pool_put(rndr, temp);
+  if (!too_deep(parser)) {
+    Blob *inner = pool_get(parser);
+    parse_block(inner, blob_str(temp), blob_len(temp), parser);
+    pool_put(parser, temp);
     temp = inner;
   }
   // else too deep: do not parse inner, just render as text
 
-  if (rndr->cb.blockquote)
-    rndr->cb.blockquote(out, temp, rndr->udata);
-  pool_put(rndr, temp);
+  if (parser->render.blockquote)
+    parser->render.blockquote(out, temp, parser->udata);
+  pool_put(parser, temp);
   return i;
 }
 
@@ -815,9 +1007,9 @@ is_fenceline(const char *text, size_t size)
 // block code: n ticks, code n+ ticks, nl; info string; trim code; n >= 3
 
 static size_t
-parse_fencedcode(Blob *out, const char *text, size_t size, Renderer *rndr)
+parse_fencedcode(Blob *out, const char *text, size_t size, Parser *parser)
 {
-  Blob *temp = pool_get(rndr);
+  Blob *temp = pool_get(parser);
   size_t pre, i;
   size_t nopen, nclose;
   size_t infofs, infend;
@@ -866,14 +1058,14 @@ parse_fencedcode(Blob *out, const char *text, size_t size, Renderer *rndr)
     blob_addchar(temp, '\n');
   }
 
-  if (rndr->cb.codeblock) {
-    Blob *info = pool_get(rndr);
+  if (parser->render.codeblock) {
+    Blob *info = pool_get(parser);
     do_escapes(info, text+infofs, infend-infofs);
-    rndr->cb.codeblock(out, blob_str(info), temp, rndr->udata);
-    pool_put(rndr, info);
+    parser->render.codeblock(out, blob_str(info), temp, parser->udata);
+    pool_put(parser, info);
   }
 
-  pool_put(rndr, temp);
+  pool_put(parser, temp);
   return i;
 }
 
@@ -903,10 +1095,10 @@ is_hrule(const char *text, size_t size)
 
 
 static void
-do_hrule(Blob *out, Renderer *rndr)
+do_hrule(Blob *out, Parser *parser)
 {
-  if (rndr->cb.hrule)
-    rndr->cb.hrule(out, rndr->udata);
+  if (parser->render.hrule)
+    parser->render.hrule(out, parser->udata);
 }
 
 
@@ -936,9 +1128,9 @@ is_itemline(const char *text, size_t size, char *ptype, int *pstart)
 
 
 static size_t
-parse_listitem(Blob *out, char type, bool *ploose, const char *text, size_t size, Renderer *rndr)
+parse_listitem(Blob *out, char type, bool *ploose, const char *text, size_t size, Parser *parser)
 {
-  Blob *temp = pool_get(rndr);
+  Blob *temp = pool_get(parser);
   size_t pre, i, j, len, sublist;
   int start;
   char itemtype;
@@ -997,60 +1189,60 @@ parse_listitem(Blob *out, char type, bool *ploose, const char *text, size_t size
 
   /* item is now in temp blob, including subitems, if any, */
   /* render it into the inner buffer: */
-  Blob *inner = pool_get(rndr);
-  if (!*ploose || too_deep(rndr)) {
+  Blob *inner = pool_get(parser);
+  if (!*ploose || too_deep(parser)) {
     if (sublist && sublist < blob_len(temp)) {
-      parse_inlines(inner, blob_buf(temp), sublist, rndr);
-      parse_block(inner, blob_buf(temp)+sublist, blob_len(temp)-sublist, rndr);
+      parse_inlines(inner, blob_buf(temp), sublist, parser);
+      parse_block(inner, blob_buf(temp)+sublist, blob_len(temp)-sublist, parser);
     }
     else {
-      parse_inlines(inner, blob_buf(temp), blob_len(temp), rndr);
+      parse_inlines(inner, blob_buf(temp), blob_len(temp), parser);
     }
   }
   else {
     if (sublist && sublist < blob_len(temp)) {
       /* Want two blocks: the stuff before, and then the sublist */
-      parse_block(inner, blob_buf(temp), sublist, rndr);
-      parse_block(inner, blob_buf(temp)+sublist, blob_len(temp)-sublist, rndr);
+      parse_block(inner, blob_buf(temp), sublist, parser);
+      parse_block(inner, blob_buf(temp)+sublist, blob_len(temp)-sublist, parser);
     }
     else {
-      parse_block(inner, blob_buf(temp), blob_len(temp), rndr);
+      parse_block(inner, blob_buf(temp), blob_len(temp), parser);
     }
   }
 
-  if (rndr->cb.listitem)
-    rndr->cb.listitem(out, inner, rndr->udata);
+  if (parser->render.listitem)
+    parser->render.listitem(out, inner, parser->udata);
 
-  pool_put(rndr, inner);
-  pool_put(rndr, temp);
+  pool_put(parser, inner);
+  pool_put(parser, temp);
 
   return j;
 }
 
 
 static size_t
-parse_list(Blob *out, char type, int start, const char *text, size_t size, Renderer *rndr)
+parse_list(Blob *out, char type, int start, const char *text, size_t size, Parser *parser)
 {
-  Blob *temp = pool_get(rndr);
+  Blob *temp = pool_get(parser);
   size_t i, len;
   bool loose = false;
 
   /* list is sequence of list items ofblob the same type: */
   for (i = 0; i < size; ) {
-    len = parse_listitem(temp, type, &loose, text+i, size-i, rndr);
+    len = parse_listitem(temp, type, &loose, text+i, size-i, parser);
     if (!len) break;
     i += len;
   }
 
-  if (rndr->cb.list)
-    rndr->cb.list(out, type, start, temp, rndr->udata);
-  pool_put(rndr, temp);
+  if (parser->render.list)
+    parser->render.list(out, type, start, temp, parser->udata);
+  pool_put(parser, temp);
   return i;
 }
 
 
 static size_t
-is_htmlline(const char *text, size_t size, int *pkind, Renderer *rndr)
+is_htmlline(const char *text, size_t size, int *pkind, Parser *parser)
 {
   // 1. <pre, <script, <style, or <textarea ... until closing tag
   // 2. <!-- ... until -->
@@ -1101,10 +1293,10 @@ is_htmlline(const char *text, size_t size, int *pkind, Renderer *rndr)
   i = j++;  /* skip the '<' */
   isclose = text[j] == '/';
   if (isclose) j++;
-  name = tagnamefind(text+j, size-j);
+  name = tagname_find(text+j, size-j);
   if (name) {
-    bool istext = name == rndr->pretag || name == rndr->scripttag ||
-                  name == rndr->styletag || name == rndr->textareatag;
+    bool istext = name == parser->pretag || name == parser->scripttag ||
+                  name == parser->styletag || name == parser->textareatag;
     j += name->len;
     if (!isclose && istext && j < size && (text[j] == '>' || ISSPACE(text[j]))) {
       if (pkind) *pkind = 1;
@@ -1126,7 +1318,7 @@ is_htmlline(const char *text, size_t size, int *pkind, Renderer *rndr)
 
 
 static size_t
-parse_htmlblock(Blob *out, const char *text, size_t size, size_t startlen, int kind, Renderer *rndr)
+parse_htmlblock(Blob *out, const char *text, size_t size, size_t startlen, int kind, Parser *parser)
 {
   // Assume text points to "start condition" of the given kind (CM 4.6)
   // and startlen is the length of this start condition. End condition is:
@@ -1172,9 +1364,9 @@ parse_htmlblock(Blob *out, const char *text, size_t size, size_t startlen, int k
     }
   }
 
-  if (rndr->cb.htmlblock) {
+  if (parser->render.htmlblock) {
     Blob html = { (char *) text, j, 0 }; /* static */
-    rndr->cb.htmlblock(out, &html, rndr->udata);
+    parser->render.htmlblock(out, &html, parser->udata);
   }
 
   return j;
@@ -1182,9 +1374,9 @@ parse_htmlblock(Blob *out, const char *text, size_t size, size_t startlen, int k
 
 
 static size_t
-parse_paragraph(Blob *out, const char *text, size_t size, Renderer *rndr)
+parse_paragraph(Blob *out, const char *text, size_t size, Parser *parser)
 {
-  Blob *temp = pool_get(rndr);
+  Blob *temp = pool_get(parser);
   const char *s;
   size_t i, j, len, n;
   int level;
@@ -1200,7 +1392,7 @@ parse_paragraph(Blob *out, const char *text, size_t size, Renderer *rndr)
     if (is_itemline(text+i, len, 0, 0)) break;
     for (j = 0; j < len && ISBLANK(text[i+j]); j++);
     blob_addbuf(temp, text+i+j, len-j);
-    // NOTE trailing blanks and hard breaks handled by inline parsing
+    /* NOTE trailing blanks and breaks handled by inline parsing */
     i += len;
   }
 
@@ -1210,60 +1402,60 @@ parse_paragraph(Blob *out, const char *text, size_t size, Renderer *rndr)
   blob_trunc(temp, j);
 
   if (level > 0 && blob_len(temp) > 0) {
-    if (rndr->cb.heading) {
-      Blob *title = pool_get(rndr);
-      parse_inlines(title, blob_buf(temp), blob_len(temp), rndr);
-      rndr->cb.heading(out, level, title, rndr->udata);
-      pool_put(rndr, title);
+    if (parser->render.heading) {
+      Blob *title = pool_get(parser);
+      parse_inlines(title, blob_buf(temp), blob_len(temp), parser);
+      parser->render.heading(out, level, title, parser->udata);
+      pool_put(parser, title);
     }
     i += n; /* consume the setext underlining */
   }
-  else if (i > 0 && rndr->cb.paragraph) {
-    Blob *para = pool_get(rndr);
-    parse_inlines(para, blob_buf(temp), blob_len(temp), rndr);
-    rndr->cb.paragraph(out, para, rndr->udata);
-    pool_put(rndr, para);
+  else if (i > 0 && parser->render.paragraph) {
+    Blob *para = pool_get(parser);
+    parse_inlines(para, blob_buf(temp), blob_len(temp), parser);
+    parser->render.paragraph(out, para, parser->udata);
+    pool_put(parser, para);
   }
 
-  pool_put(rndr, temp);
+  pool_put(parser, temp);
 
   return i;
 }
 
 
 static void
-parse_block(Blob *out, const char *text, size_t size, Renderer *rndr)
+parse_block(Blob *out, const char *text, size_t size, Parser *parser)
 {
   size_t start;
   char itemtype;
   int itemstart;
   int htmlkind;
 
-  rndr->nesting_depth++;
+  parser->nesting_depth++;
   for (start=0; start<size; ) {
     const char *ptr = text+start;
     size_t len, end = size-start;
 
-    if ((len = parse_atxheading(out, ptr, end, rndr))) {
+    if ((len = parse_atxheading(out, ptr, end, parser))) {
       /* nothing else to do */
     }
     else if (is_codeline(ptr, end)) {
-      len = parse_codeblock(out, ptr, end, rndr);
+      len = parse_codeblock(out, ptr, end, parser);
     }
     else if (is_quoteline(ptr, end)) {
-      len = parse_blockquote(out, ptr, end, rndr);
+      len = parse_blockquote(out, ptr, end, parser);
     }
     else if ((len = is_hrule(ptr, end))) {
-      do_hrule(out, rndr);
+      do_hrule(out, parser);
     }
     else if (is_fenceline(ptr, end)) {
-      len = parse_fencedcode(out, ptr, end, rndr);
+      len = parse_fencedcode(out, ptr, end, parser);
     }
     else if (is_itemline(ptr, end, &itemtype, &itemstart)) {
-      len = parse_list(out, itemtype, itemstart, ptr, end, rndr);
+      len = parse_list(out, itemtype, itemstart, ptr, end, parser);
     }
-    else if ((len = is_htmlline(ptr, end, &htmlkind, rndr))) {
-      len = parse_htmlblock(out, ptr, end, len, htmlkind, rndr);
+    else if ((len = is_htmlline(ptr, end, &htmlkind, parser))) {
+      len = parse_htmlblock(out, ptr, end, len, htmlkind, parser);
     }
     // TODO table lines
     else if ((len = is_linkdef(ptr, end, 0))) {
@@ -1275,13 +1467,45 @@ parse_block(Blob *out, const char *text, size_t size, Renderer *rndr)
     else {
       /* Non-blank lines that cannot be interpreted otherwise
          form a paragraph in Markdown/CommonMark: */
-      len = parse_paragraph(out, ptr, end, rndr);
+      len = parse_paragraph(out, ptr, end, parser);
     }
 
     if (len) start += len;
     else break;
   }
-  rndr->nesting_depth--;
+  parser->nesting_depth--;
+}
+
+
+static void
+init(Parser *parser, struct markdown *mkdn)
+{
+  assert(parser != 0);
+  assert(mkdn != 0);
+  parser->render = *mkdn;
+  parser->udata = mkdn->udata;
+  parser->nesting_depth = 0;
+  parser->in_link = 0;
+  parser->linkdefs = (Blob) BLOB_INIT;
+  parser->pool_index = 0;
+  memset(parser->blob_pool, 0, sizeof(parser->blob_pool));
+  memset(parser->active_chars, 0, sizeof(parser->active_chars));
+  parser->active_chars['\\'] = do_escape;
+  parser->active_chars['<'] = do_anglebrack;
+  if (mkdn->entity) parser->active_chars['&'] = do_entity;
+  if (mkdn->linebreak) parser->active_chars['\n'] = do_linebreak;
+  if (mkdn->linebreak) parser->active_chars['\r'] = do_linebreak;
+  if (mkdn->codespan) parser->active_chars['`'] = do_codespan;
+  if (mkdn->image || mkdn->link) parser->active_chars['['] = do_link;
+
+  parser->pretag = tagname_find("pre", -1);
+  assert(parser->pretag != 0);
+  parser->scripttag = tagname_find("script", -1);
+  assert(parser->scripttag != 0);
+  parser->styletag = tagname_find("style", -1);
+  assert(parser->styletag != 0);
+  parser->textareatag = tagname_find("textarea", -1);
+  assert(parser->textareatag != 0);
 }
 
 
@@ -1289,39 +1513,21 @@ void
 markdown(Blob *out, const char *text, size_t size, struct markdown *mkdn)
 {
   size_t start;
-  Renderer renderer;
+  Parser parser;
 
   if (!text || !size || !mkdn) return;
   assert(out != NULL);
 
-  /* setup */
-  renderer.cb = *mkdn;
-  renderer.udata = mkdn->udata;
-  renderer.nesting_depth = 0;
-  renderer.pool_index = 0;
-  memset(renderer.blob_pool, 0, sizeof(renderer.blob_pool));
-  memset(renderer.active_chars, 0, sizeof(renderer.active_chars));
-  renderer.active_chars['\\'] = do_escape;
-  renderer.active_chars['<'] = do_anglebrack;
-  if (mkdn->entity) renderer.active_chars['&'] = do_entity;
-  if (mkdn->linebreak) renderer.active_chars['\n'] = do_linebreak;
-  if (mkdn->linebreak) renderer.active_chars['\r'] = do_linebreak;
-  if (mkdn->codespan) renderer.active_chars['`'] = do_codespan;
-
-  renderer.pretag = tagnamefind("pre", -1);
-  assert(renderer.pretag != 0);
-  renderer.scripttag = tagnamefind("script", -1);
-  assert(renderer.scripttag != 0);
-  renderer.styletag = tagnamefind("style", -1);
-  assert(renderer.styletag != 0);
-  renderer.textareatag = tagnamefind("textarea", -1);
-  assert(renderer.textareatag != 0);
+  init(&parser, mkdn);
 
   /* 1st pass: collect references */
   for (start = 0; start < size; ) {
-    Linkdef link;
-    size_t len = is_linkdef(text+start, size-start, &link);
-    if (len) start += len;
+    Linkdef linkdef;
+    size_t len = is_linkdef(text+start, size-start, &linkdef);
+    if (len) {
+      start += len;
+      blob_addbuf(&parser.linkdefs, (void*)&linkdef, sizeof(linkdef));
+    }
     else {
       // TODO pre process into buffer: expand tabs (size=4), newlines to \n, \0 to U+FFFD
       len = scanline(text+start, size-start);
@@ -1330,15 +1536,22 @@ markdown(Blob *out, const char *text, size_t size, struct markdown *mkdn)
     }
   }
 
+  if (blob_len(&parser.linkdefs) > 0) {
+    qsort(blob_buf(&parser.linkdefs),
+          blob_len(&parser.linkdefs)/sizeof(struct linkdef),
+          sizeof(struct linkdef), linkdef_cmp);
+  }
+
   /* 2nd pass: do the rendering */
   if (mkdn->prolog) mkdn->prolog(out, mkdn->udata);
-  parse_block(out, text, size, &renderer);
+  parse_block(out, text, size, &parser);
   if (mkdn->epilog) mkdn->epilog(out, mkdn->udata);
 
   /* cleanup */
-  assert(renderer.nesting_depth == 0);
-  while (renderer.pool_index > 0) {
-    blob_free(renderer.blob_pool[--renderer.pool_index]);
+  assert(parser.nesting_depth == 0);
+  blob_free(&parser.linkdefs);
+  while (parser.pool_index > 0) {
+    blob_free(parser.blob_pool[--parser.pool_index]);
   }
 }
 

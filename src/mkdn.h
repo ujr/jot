@@ -26,13 +26,13 @@ struct markdown {
   /* span callbacks */
   bool (*emphasis)(Blob *out, char c, int n, Blob *text, void *udata);
   bool (*codespan)(Blob *out, const char *text, size_t size, void *udata);
-  bool (*link)(Blob *out, const char *link, const char *title, Blob *body, void *udata);
-  bool (*image)(Blob *out, const char *link, const char *title, Blob *alt, void *udata);
+  bool (*link)(Blob *out, Blob *link, Blob *title, Blob *body, void *udata);
+  bool (*image)(Blob *out, Blob *link, Blob *title, Blob *alt, void *udata);
   bool (*autolink)(Blob *out, char type, const char *text, size_t size, void *udata);
   bool (*htmltag)(Blob *out, const char *text, size_t size, void *udata);
   bool (*linebreak)(Blob *out, void *udata);
   bool (*entity)(Blob *out, const char *text, size_t size, void *udata);
-  /* basics */
+  /* text runs */
   void (*text)(Blob *out, const char *text, size_t size, void *udata);
 };
 

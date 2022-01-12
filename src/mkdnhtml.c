@@ -120,15 +120,19 @@ quote_text(Blob *out, const char *text, size_t size, int doquot)
 
 /** escape < > & ' " as &lt; &gt; &amp; &#39; &quot; for HTML attrs */
 static void
-quote_attr(Blob *out, const char *text, size_t size)
+quote_attr(Blob *out, const char *text, size_t size, const char *encode)
 {
   size_t i, j = 0;
-  while (j < size) {
+  const char *p;
+  if (!encode) encode = "";
+  while (j < size) { p = 0;
     for (i = j; j < size && text[j] != '<' && text[j] != '>' &&
-         text[j] != '&' && text[j] != '"' && text[j] != '\''; j++);
-    blob_addbuf(out, text+i, j-i);
+         text[j] != '&' && text[j] != '"' && text[j] != '\'' &&
+         !(p = strchr(encode, text[j])); j++);
+    if (j > i) blob_addbuf(out, text+i, j-i);
     for (; j < size; j++) {
-           if (text[j] == '<') BLOB_ADDLIT(out, "&lt;");
+      if (strchr(encode, text[j])) blob_addfmt(out, "%%%02X", text[j]);
+      else if (text[j] == '<') BLOB_ADDLIT(out, "&lt;");
       else if (text[j] == '>') BLOB_ADDLIT(out, "&gt;");
       else if (text[j] == '&') BLOB_ADDLIT(out, "&amp;");
       else if (text[j] == '"') BLOB_ADDLIT(out, "&quot;");
@@ -145,7 +149,7 @@ html_prolog(Blob *out, void *udata)
   struct html *phtml = (struct html *) udata;
   if (phtml && phtml->wrapperclass && phtml->wrapperclass[0]) {
     BLOB_ADDLIT(out, "<div class=\"");
-    quote_attr(out, phtml->wrapperclass, strlen(phtml->wrapperclass));
+    quote_attr(out, phtml->wrapperclass, strlen(phtml->wrapperclass), 0);
     BLOB_ADDLIT(out, "\">\n");
   }
   else BLOB_ADDLIT(out, "<div class=\"markdown\">\n");
@@ -216,7 +220,7 @@ render_pikchr(Blob *out, const char *info, Blob *text)
   svg = pikchr(blob_str(text), divclass, flags, &wd, &ht);
   if (wd > 0 && ht > 0) {
     BLOB_ADDLIT(out, "<div class=\"");
-    quote_attr(out, divclass, strlen(divclass));
+    quote_attr(out, divclass, strlen(divclass), 0);
     BLOB_ADDLIT(out, "\">\n");
     blob_addstr(out, svg);
     BLOB_ADDLIT(out, "</div>\n");
@@ -248,7 +252,7 @@ html_codeblock(Blob *out, const char *lang, Blob *text, void *udata)
       return;
     }
     BLOB_ADDLIT(out, "<pre><code class=\"language-");
-    quote_attr(out, lang+i, j-i);
+    quote_attr(out, lang+i, j-i, 0);
     BLOB_ADDLIT(out, "\">");
   }
   else {
@@ -313,6 +317,53 @@ html_codespan(Blob *out, const char *text, size_t size, void *udata)
 
 
 static bool
+html_link(Blob *out, Blob *link, Blob *title, Blob *body, void *udata)
+{
+  /* <a href="LINK" title="TITLE">BODY</a> */
+  struct html *phtml = udata;
+  int quotequot = phtml->cmout;
+
+  BLOB_ADDLIT(out, "<a href=\"");
+  // TODO url encode: blank " \ (but not %, as we assume this is valid)
+  quote_attr(out, blob_str(link), blob_len(link), " \\\"<&>");
+  blob_addchar(out, '"');
+  if (blob_len(title) > 0) {
+    BLOB_ADDLIT(out, " title=\"");
+    quote_attr(out, blob_str(title), blob_len(title), 0);
+    blob_addchar(out, '"');
+  }
+  blob_addchar(out, '>');
+  quote_text(out, blob_str(body), blob_len(body), quotequot);
+  BLOB_ADDLIT(out, "</a>");
+  return true;
+}
+
+
+static bool
+html_image(Blob *out, Blob *src, Blob *title, Blob *alt, void *udata)
+{
+  /* <img src="SRC" title="TITLE" alt="ALT" /> */
+  struct html *phtml = udata;
+  BLOB_ADDLIT(out, "<img src=\"");
+  quote_attr(out, blob_str(src), blob_len(src), " \\\"<&>");
+  blob_addchar(out, '"');
+  if (blob_len(alt) > 0 || phtml->cmout) {
+    BLOB_ADDLIT(out, " alt=\"");
+    quote_attr(out, blob_str(alt), blob_len(alt), 0);
+    blob_addchar(out, '"');
+  }
+  if (blob_len(title) > 0) {
+    BLOB_ADDLIT(out, " title=\"");
+    quote_attr(out, blob_str(title), blob_len(title), 0);
+    blob_addchar(out, '"');
+  }
+  if (phtml->cmout) blob_addchar(out, ' ');
+  BLOB_ADDLIT(out, "/>");
+  return true;
+}
+
+
+static bool
 html_autolink(Blob *out, char type, const char *text, size_t size, void *udata)
 {
   struct html *phtml = udata;
@@ -325,7 +376,7 @@ html_autolink(Blob *out, char type, const char *text, size_t size, void *udata)
 
   BLOB_ADDLIT(out, "<a href=\"");
   if (implicit_mail) BLOB_ADDLIT(out, "mailto:");
-  quote_attr(out, text, size);
+  quote_attr(out, text, size, " \\\"<&>");
   BLOB_ADDLIT(out, "\">");
   if (explicit_mail)
     quote_text(out, text+7, size-7, quotequot);
@@ -433,6 +484,8 @@ mkdnhtml(Blob *out, const char *txt, size_t len, const char *wrap, int pretty)
 
   rndr.codespan = html_codespan;
   // TODO inline stuff
+  rndr.link = html_link;
+  rndr.image = html_image;
   rndr.autolink = html_autolink;
   rndr.htmltag = html_htmltag;
   rndr.linebreak = html_linebreak;
