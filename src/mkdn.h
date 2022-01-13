@@ -7,12 +7,13 @@
 #include "blob.h"
 
 struct markdown {
-  const char *spanchars; // usually * and _, may add ~ + -
-  void *udata; // user data pointer, passed to callbacks
+  const char *spanchars; /* usually "*_" but may add "~+-" */
+  void *udata; /* user data pointer, passed to callbacks */
 
   /* document callbacks */
   void (*prolog)(Blob *out, void *udata);
   void (*epilog)(Blob *out, void *udata);
+
   /* block callbacks */
   void (*heading)(Blob *out, int level, Blob *text, void *udata);
   void (*paragraph)(Blob *out, Blob *text, void *udata);
@@ -23,6 +24,7 @@ struct markdown {
   void (*hrule)(Blob *out, void *udata);
   void (*htmlblock)(Blob *out, Blob *text, void *udata);
   // TOOD table/row/cell
+
   /* span callbacks */
   bool (*emphasis)(Blob *out, char c, int n, Blob *text, void *udata);
   bool (*codespan)(Blob *out, const char *text, size_t size, void *udata);
@@ -32,6 +34,7 @@ struct markdown {
   bool (*htmltag)(Blob *out, const char *text, size_t size, void *udata);
   bool (*linebreak)(Blob *out, void *udata);
   bool (*entity)(Blob *out, const char *text, size_t size, void *udata);
+
   /* text runs */
   void (*text)(Blob *out, const char *text, size_t size, void *udata);
 };
