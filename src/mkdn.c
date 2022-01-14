@@ -25,6 +25,7 @@
  */
 
 
+#define ISASCII(c) (0 <= (c) && (c) <= 127)
 #define ISCNTRL(c) ((c) < 32 || (c) == 127)
 #define ISPUNCT(c) (('!' <= (c) && (c) <= '/')  /* 21..2F  !"#$%&'()*+,-./ */ \
                  || (':' <= (c) && (c) <= '@')  /* 3A..40  ; ; < = > ? @   */ \
@@ -41,11 +42,14 @@
 #define TOUPPER(c) (ISLOWER(c) ? (c) - 'a' + 'A' : (c))
 
 #define UNUSED(x) ((void)(x))
-#define OUT_OF_MEMORY 0
-#define INVALID_HTMLBLOCK_KIND 0
 #define MIN(a,b) ((a) < (b) ? (a) : (b))
 
-/** length of array (number of items) */
+/* for meaningful assertions */
+#define OUT_OF_MEMORY 0
+#define INVALID_HTMLBLOCK_KIND 0
+#define NOT_REACHED 0
+
+/* length of array (number of items) */
 #define ARLEN(a) (sizeof(a)/sizeof((a)[0]))
 
 
@@ -252,6 +256,18 @@ linkdef_find(
 }
 
 
+/** scan past next newline; return #bytes scanned */
+static size_t
+scan_line(const char *text, size_t size)
+{
+  size_t j = 0;
+  while (j < size && text[j] != '\n' && text[j] != '\r') j++;
+  if (j < size) j++;
+  if (j < size && text[j] == '\n' && text[j-1] == '\r') j++;
+  return j;
+}
+
+
 /** scan autolink; return length and type: link / mail / mailto */
 static size_t
 scan_autolink(const char *text, size_t size, char *ptype)
@@ -302,7 +318,7 @@ trymail:
 
 /** scan link label like [foo]; return length or zero */
 static size_t
-scan_label(const char *text, size_t size)
+scan_link_label(const char *text, size_t size)
 {
   size_t j = 0;
   if (j >= size || text[j] != '[') return 0;
@@ -380,23 +396,29 @@ scan_link_and_title(const char *text, size_t size,
 }
 
 
-/** scan full link (inline, reference, collapsed, shortcut); return length or 0 */
 static size_t
-scan_full_link(const char *text, size_t size, Parser *parser,
-  struct slice *textslice, struct slice *linkslice, struct slice *titleslice)
+scan_inline_link(const char *text, size_t size,
+  struct slice *linkslice, struct slice *titleslice)
 {
-  /* Link types:
-     - inline:    [text](dest "title")
-     - reference: [text][ref]
-     - collapsed: [text][]     let ref = text
-     - shortcut:  [text]       let ref = text
-  */
-  size_t j = 0, len, textend;
+  size_t j = 0, len;
+  if (size < 2 || text[j] != '(') return 0;
+  for (++j; j < size && ISBLANK(text[j]); j++);
+  len = scan_link_and_title(text+j, size-j, linkslice, titleslice);
+  if (!len && text[j] != ')') return 0;  /* allow empty () */
+  j += len;
+  while (j < size && ISBLANK(text[j])) j++;
+  return j < size && text[j] == ')' ? j+1 : 0;  /* expect and eat closing paren */
+}
+
+
+static size_t
+scan_link_body(const char *text, size_t size)
+{
+  size_t j = 0;
   int level;
 
-  if (size < 2 || text[j] != '[') return 0;
-
-  /* look for closing bracket: */
+  if (j >= size || text[j] != '[') return 0;
+  /* allow balanced brackets while looking for closing bracket: */
   for (level = 1, ++j; j < size; j++) {
     if (text[j] == '\\') { j++; continue; }
     if (text[j] == '[') level += 1;
@@ -405,45 +427,120 @@ scan_full_link(const char *text, size_t size, Parser *parser,
     }
   }
   if (j >= size) return 0;  /* unmatched '[' */
-  textend = j++;  /* eat closing bracket */
+  return j+1;  /* include closing bracket */
+}
 
-  if (textslice) *textslice = slice(text+1, textend-1);
 
-  /* inline or reference link must follow immediately: */
+/** scan full link: inline, reference, collapsed, or shortcut */
+static size_t
+scan_full_link(const char *text, size_t size, Parser *parser,
+  struct slice *bodyslice, struct slice *linkslice, struct slice *titleslice)
+{
+  /* Link types:
+     - inline:    [text](dest "title")
+     - reference: [text][ref]
+     - collapsed: [text][]     let ref = text
+     - shortcut:  [text]       let ref = text
+  */
+  const char *bodyptr;
+  size_t j = 0, len, bodylen;
+
+  if (size < 2 || text[j] != '[') return 0;
+  len = scan_link_body(text, size);
+  if (!len) return 0;
+  j += len;
+
+  bodyptr = text+1;
+  bodylen = len-2;
+  if (bodyslice) *bodyslice = slice(bodyptr, bodylen);
+
+  /* link must follow immediately (no blanks) */
   if (j < size && text[j] == '(') {  /* inline link */
-    for (++j; j < size && ISBLANK(text[j]); j++);
-    len = scan_link_and_title(text+j, size-j, linkslice, titleslice);
-    if (!len && text[j] != ')') return 0;  /* allow empty () */
-    j += len;
-    while (j < size && ISBLANK(text[j])) j++;
-    if (j >= size || text[j] != ')') return 0;
-    j++;  /* eat closing paren */
+    len = scan_inline_link(text+j, size-j, linkslice, titleslice);
+    return len ? j+len : 0;
   }
-  else if (j < size && text[j] == '[') {
-    len = scan_label(text+j, MIN(size-j, 999));
+  if (j < size && text[j] == '[') {
+    len = scan_link_label(text+j, MIN(size-j, 999));
     if (len < 2) return 0;
     if (len == 2) {  /* collapsed link: [] */
-      if (!linkdef_find(text+1, textend-1, parser, linkslice, titleslice))
+      if (!linkdef_find(bodyptr, bodylen, parser, linkslice, titleslice))
         return 0;
     }
     else {  /* reference link: [ref] */
       if (!linkdef_find(text+j+1, len-2, parser, linkslice, titleslice))
         return 0;
     }
-    j += len;  /* consume the ']' */
+    return j + len;  /* consume the ']' */
   }
-  else { /* shortcut link */
-    if (!linkdef_find(text+1, textend-1, parser, linkslice, titleslice))
-      return 0;
+  /* shortcut link (no label at all, just text in brackets) */
+  return linkdef_find(bodyptr, bodylen, parser, linkslice, titleslice) ? j : 0;
+}
+
+
+/** skip over link/image: assume text[0] is opening bracket; always return > 0 */
+static size_t
+skip_full_link(const char *text, size_t size)
+{
+  size_t j = 0, len;
+  const size_t mismatch = 1;  /* mismatch means lonely bracket, thus length 1 */
+  len = scan_link_body(text, size);
+  if (!len) return mismatch;
+  j += len;
+  if (j < size && text[j] == '(') {
+    len = scan_inline_link(text+j, size-j, 0, 0);
+    return len ? j+len : mismatch;
+  }
+  if (j < size && text[j] == '[') {
+    len = scan_link_label(text+j, MIN(size-j, 999));
+    return len ? j+len : mismatch;
   }
   return j;
 }
 
 
-static bool
-too_deep(Parser *parser)
+/** skip over codespan; assume text[0] is start tick; always return > 0 */
+static size_t
+skip_codespan(const char *text, size_t size)
 {
-  return parser->nesting_depth > 100;
+  size_t j, oticks, cticks;
+  char delim;
+
+  assert(size > 0);
+  delim = text[0];
+  for (j = 1; j < size && text[j] == delim; j++);
+  oticks = j;
+
+  for (cticks = 0; j < size && cticks < oticks; j++) {
+    if (text[j] == delim) cticks += 1;
+    else cticks = 0;
+  }
+
+  /* past closing ticks if closed; else past opening ticks: */
+  return cticks == oticks ? j : oticks;
+}
+
+
+/** scan to next span (emph, strong) char, skipping other spans */
+static size_t
+scan_span(const char *text, size_t size, char c)
+{
+  size_t j = 0;
+  while (j < size) {
+    while (j < size && text[j] != c && text[j] != '[' && text[j] != '`') j++;
+    if (j >= size) return 0;
+    if (j && text[j-1] == '\\') { j++; continue; }  /* escaped */
+    if (text[j] == c) return j;  /* found */
+    if (text[j] == '`') {  /* skip codespan */
+      j += skip_codespan(text+j, size-j);
+      continue;
+    }
+    if (text[j] == '[') {  /* skip link or image */
+      j += skip_full_link(text+j, size-j);
+      continue;
+    }
+    assert(NOT_REACHED);
+  }
+  return 0;
 }
 
 
@@ -480,6 +577,13 @@ pool_put(Parser *parser, Blob *blob)
 }
 
 
+static bool
+too_deep(Parser *parser)
+{
+  return parser->nesting_depth > 100;
+}
+
+
 static void
 parse_inlines(Blob *out, const char *text, size_t size, Parser *parser)
 {
@@ -487,11 +591,11 @@ parse_inlines(Blob *out, const char *text, size_t size, Parser *parser)
   size_t i, j, n;
   /* copy chars to output, looking for "active" chars */
   i = j = 0;
-  while (j < size) {
+  for (;;) {
     for (; j < size; j++) {
       unsigned uc = ((unsigned) text[j]) & 0x7F;
       action = parser->active_chars[uc];
-      if (action) break;
+      if (action && !too_deep(parser)) break;
     }
     if (j > i) {
       if (parser->render.text)
@@ -504,6 +608,135 @@ parse_inlines(Blob *out, const char *text, size_t size, Parser *parser)
     n = action(out, text+j, size-j, j, parser);
     if (n) { j += n; i = j; } else j += 1;
   }
+}
+
+
+/* CM 6.2 defines "left flanking" (can begin) and "right flanking"
+// (can end emphasis) delimiter runs based on what's before and after.
+// In the table below, '_' represents a space; start of text and end
+// of text are to be treated as blanks.
+//
+//   char     char              is left    is right
+//   before   after   example   flanking   flanking
+//   ------   -----   -------   --------   --------
+//   space    space    _*_        no         no
+//   space    punct    _*"        yes        no
+//   space    alnum    _*b        yes        no
+//   punct    space    "*_        no         yes
+//   punct    punct    "*"        yes        yes
+//   punct    alnum    "*b        yes        no
+//   alnum    space    a*_        no         yes
+//   alnum    punct    a*"        no         yes
+//   alnum    alnum    a*b        yes        yes
+*/
+#define DELIM_OPENER 2
+#define DELIM_CLOSER 4
+
+static int
+can_open(char before, char after)
+{
+  if (ISSPACE(after)) return 0;
+  if (ISALNUM(after)) return DELIM_OPENER;
+  if (ISALNUM(before)) return 0;
+  return DELIM_OPENER;
+  // TODO special: if c==_ and ISALNUM(before) return false
+}
+
+static bool
+can_close(char before, char after)
+{
+  if (ISSPACE(before)) return 0;
+  if (ISALNUM(before)) return DELIM_CLOSER;
+  if (ISALNUM(after)) return 0;
+  return DELIM_CLOSER;
+}
+
+
+static size_t
+emphasis1(Blob *out, const char *text, size_t size, Parser *parser)
+{
+  size_t j, len, ok;
+  char before, after;
+  char c = text[0];  /* guaranteed by caller */
+
+  for (j = 1; j < size; ) {
+    len = scan_span(text+j, size-j, c);
+    if (!len) return 0;
+    j += len;
+    if (j >= size) return 0;
+    assert(text[j] == c);
+    if (j+1 < size && text[j+1] == c) {
+      j += 2;  /* skip double delims */
+      continue;
+    }
+    before = text[j-1];
+    after = j+1 < size ? text[j+1] : ' ';
+    if (j < size && text[j] == c &&
+        can_close(before, after) && (c != '_' || !ISALNUM(after))) {
+      Blob *temp = pool_get(parser);
+      parse_inlines(temp, text+1, j-1, parser);
+      ok = parser->render.emphasis(out, c, 1, temp, parser->udata);
+      pool_put(parser, temp);
+      return ok ? j+1 : 0;
+    }
+  }
+  return 0;
+}
+
+static size_t
+emphasis2(Blob *out, const char *text, size_t size, Parser *parser)
+{
+  size_t j, len, ok;
+  char before, after;
+  char c = text[0];
+
+  for (j = 2; j < size; ) {
+    len = scan_span(text+j, size-j, c);
+    if (!len) return 0;
+    j += len;
+    if (j >= size) return 0;
+
+    before = text[j-1];
+    assert(text[j] == c);
+    j += 1;
+    if (j >= size || text[j] != c) continue;  /* not double delim */
+    j += 1;
+    after = j < size ? text[j] : ' ';
+    if (can_close(before, after) && (c != '_' || !ISALNUM(after))) {
+      Blob *temp = pool_get(parser);
+      parse_inlines(temp, text+2, j-4, parser);
+      ok = parser->render.emphasis(out, c, 2, temp, parser->udata);
+      return ok ? j+2 : 0;
+    }
+  }
+  return 0;
+}
+
+static size_t
+do_emphasis(
+  Blob *out, const char *text, size_t size, size_t prefix, Parser *parser)
+{
+  char c, before;
+  UNUSED(prefix);
+  if (!size) return 0;
+  c = text[0];
+  before = prefix > 0 ? text[-1] : ' ';
+
+  if (size > 1 && text[1] != c) {
+    if (!can_open(before, text[1])) return 0;
+    if (c == '_' && ISALNUM(before)) return 0;
+    return emphasis1(out, text, size, parser);
+  }
+
+  if (size > 2 && text[1] == c && text[2] != c) {
+    if (!can_open(before, text[2])) return 0;
+    if (c == '_' && ISALNUM(before)) return 0;
+    return emphasis2(out, text, size, parser);
+  }
+
+  // TODO triple emphasis
+
+  return 0;
 }
 
 
@@ -608,12 +841,31 @@ do_linebreak(
 }
 
 
+static void
+emit_codespan(Blob *out, const char *text, size_t size)
+{
+  size_t i, j;
+  for (j=0;;) {
+    for (i=j; j < size && text[j] != '\n' && text[j] != '\r'; j++);
+    if (j > i) {
+      blob_addbuf(out, text+i, j-i);
+      i = j;
+    }
+    if (j >= size) break;
+    blob_addchar(out, ' ');
+    if (++j < size && text[j] == '\n' && text[j-1] == '\r') j++;
+  }
+}
+
+
 static size_t
 do_codespan(
   Blob *out, const char *text, size_t size, size_t prefix, Parser *parser)
 {
+  Blob *body;
   size_t i, j, end, oticks, cticks;
   char delim;
+  int ok;
   UNUSED(prefix);
 
   if (size < 2) return 0;
@@ -635,8 +887,13 @@ do_codespan(
     i++; j--;
   }
 
+  /* by CM 6.1 newlines are converted to blanks! */
+  body = pool_get(parser);
+  emit_codespan(body, text+i, j-i);
   assert(parser->render.codespan != 0);
-  return parser->render.codespan(out, text+i, j-i, parser) ? end : 0;
+  ok = parser->render.codespan(out, body, parser->udata) ? end : 0;
+  pool_put(parser, body);
+  return ok ? end : 0;
 }
 
 
@@ -731,44 +988,12 @@ do_image(
   return ok ? 1+len : 0;
 }
 
-// TODO other span processors
+
+/** block parsing **/
 
 
 static void
-parse_block(Blob *out, const char *text, size_t size, Parser *parser);
-
-
-/** scan past next newline; return #bytes scanned */
-static size_t
-scanline(const char *text, size_t size)
-{
-  size_t j = 0;
-  while (j < size && text[j] != '\n' && text[j] != '\r') j++;
-  if (j < size) j++;
-  if (j < size && text[j] == '\n' && text[j-1] == '\r') j++;
-  return j;
-}
-
-
-static size_t
-skipcode(const char *text, size_t size)
-{
-  size_t j, oticks, cticks;
-  char delim;
-
-  if (size < 2) return 0;
-  delim = text[0];
-  for (j = 1; j < size && text[j] == delim; j++);
-  oticks = j;
-
-  for (cticks = 0; j < size && cticks < oticks; j++) {
-    if (text[j] == delim) cticks += 1;
-    else cticks = 0;
-  }
-
-  /* past closing ticks if closed; else past opening ticks: */
-  return cticks == oticks ? j : oticks;
-}
+parse_blocks(Blob *out, const char *text, size_t size, Parser *parser);
 
 
 /** skip up to three initial blanks */
@@ -803,7 +1028,7 @@ is_linkdef(const char *text, size_t size, Linkdef *pdef)
   struct slice link, title;
   size_t len, j = preblanks(text, size);
 
-  len = scan_label(text+j, size-j);
+  len = scan_link_label(text+j, size-j);
   if (!len) return 0;
   idofs = j+1;
   j += len;
@@ -889,7 +1114,7 @@ parse_atxheading(Blob *out, const char *text, size_t size, Parser *parser)
   size_t j = is_atxline(text, size, &level);
   if (!j) return 0;
   start = j;
-  j += scanline(text+j, size-j);
+  j += scan_line(text+j, size-j);
   len = j;
   /* scan back over blanks, hashes, and blanks again: */
   while (j > start && ISSPACE(text[j-1])) j--;
@@ -996,7 +1221,7 @@ parse_blockquote(Blob *out, const char *text, size_t size, Parser *parser)
   if (too_deep(parser)) { /* do not parse, just render as text */ }
   else {
     Blob *inner = pool_get(parser);
-    parse_block(inner, blob_str(temp), blob_len(temp), parser);
+    parse_blocks(inner, blob_str(temp), blob_len(temp), parser);
     pool_put(parser, temp);
     temp = inner;
   }
@@ -1032,14 +1257,14 @@ is_fenceline(const char *text, size_t size)
 }
 
 
-/*
-// inline code: n ticks, code, n ticks; trim code; n >= 1
-// fence block: n ticks, code, n+ ticks, nl; info string; trim code; n >= 3
-*/
-
 static size_t
 parse_fencedcode(Blob *out, const char *text, size_t size, Parser *parser)
 {
+  /* Inline code and fenced code block are very similar, but not the same:
+  // - inline code: n ticks, code, n ticks; n >= 1;
+  // - fence block: n ticks, code, n+ ticks, nl; n >= 3; info string
+  // In both cases, trim the code.
+  */
   Blob *temp = pool_get(parser);
   size_t pre, j;
   size_t nopen, nclose;
@@ -1224,7 +1449,7 @@ parse_listitem(Blob *out, char type, bool *ploose, const char *text, size_t size
   if (!*ploose || too_deep(parser)) {
     if (sublist && sublist < blob_len(temp)) {
       parse_inlines(inner, blob_buf(temp), sublist, parser);
-      parse_block(inner, blob_buf(temp)+sublist, blob_len(temp)-sublist, parser);
+      parse_blocks(inner, blob_buf(temp)+sublist, blob_len(temp)-sublist, parser);
     }
     else {
       parse_inlines(inner, blob_buf(temp), blob_len(temp), parser);
@@ -1233,11 +1458,11 @@ parse_listitem(Blob *out, char type, bool *ploose, const char *text, size_t size
   else {
     if (sublist && sublist < blob_len(temp)) {
       /* Want two blocks: the stuff before, and then the sublist */
-      parse_block(inner, blob_buf(temp), sublist, parser);
-      parse_block(inner, blob_buf(temp)+sublist, blob_len(temp)-sublist, parser);
+      parse_blocks(inner, blob_buf(temp), sublist, parser);
+      parse_blocks(inner, blob_buf(temp)+sublist, blob_len(temp)-sublist, parser);
     }
     else {
-      parse_block(inner, blob_buf(temp), blob_len(temp), parser);
+      parse_blocks(inner, blob_buf(temp), blob_len(temp), parser);
     }
   }
 
@@ -1358,7 +1583,7 @@ parse_htmlblock(Blob *out, const char *text, size_t size, size_t startlen, int k
 
   if (kind == 6 || kind == 7) {
     while (j < size) {
-      size_t len = scanline(text+j, size-j);
+      size_t len = scan_line(text+j, size-j);
       j += len;
       if (is_blankline(text+j, size-j)) break;
     }
@@ -1406,12 +1631,12 @@ parse_paragraph(Blob *out, const char *text, size_t size, Parser *parser)
   size_t j, k, len, n;
   int level;
 
-  for (j = n = 0; j < size; j += len) {
-    len = scanline(text+j, size-j);
+  for (j = n = 0, level = 0; j < size; j += len) {
+    len = scan_line(text+j, size-j);
     if (!len) break;
     if (is_blankline(text+j, len)) break;
     if (is_atxline(text+j, len, 0)) break;
-    if ((n=is_setextline(text+j, len, &level))) break;
+    if (j > 0 && (n=is_setextline(text+j, len, &level))) break;  /* not 1st line */
     if (is_hrule(text+j, len)) break;
     if (is_fenceline(text+j, len)) break;
     if (is_itemline(text+j, len, 0, 0)) break;
@@ -1447,7 +1672,7 @@ parse_paragraph(Blob *out, const char *text, size_t size, Parser *parser)
 
 
 static void
-parse_block(Blob *out, const char *text, size_t size, Parser *parser)
+parse_blocks(Blob *out, const char *text, size_t size, Parser *parser)
 {
   size_t start;
   char itemtype;
@@ -1522,6 +1747,15 @@ init(Parser *parser, struct markdown *mkdn)
   if (mkdn->codespan) parser->active_chars['`'] = do_codespan;
   if (mkdn->link) parser->active_chars['['] = do_link;
   if (mkdn->image) parser->active_chars['!'] = do_image;
+  if (mkdn->emphasis) {
+    parser->active_chars['*'] = do_emphasis;
+    parser->active_chars['_'] = do_emphasis;
+    if (mkdn->spanchars) { const char *p;
+      for (p = mkdn->spanchars; *p; p++)
+        if (ISASCII(*p) && ISPUNCT(*p))
+          parser->active_chars[((unsigned) *p)&0x7F] = do_emphasis;
+    }
+  }
 
   parser->pretag = tagname_find("pre", -1);
   assert(parser->pretag != 0);
@@ -1555,7 +1789,7 @@ markdown(Blob *out, const char *text, size_t size, struct markdown *mkdn)
     }
     else {
       // TODO pre process into buffer: expand tabs (size=4), newlines to \n, \0 to U+FFFD
-      len = scanline(text+start, size-start);
+      len = scan_line(text+start, size-start);
       if (len) start += len;
       else break;
     }
@@ -1569,7 +1803,7 @@ markdown(Blob *out, const char *text, size_t size, struct markdown *mkdn)
 
   /* 2nd pass: do the rendering */
   if (mkdn->prolog) mkdn->prolog(out, mkdn->udata);
-  parse_block(out, text, size, &parser);
+  parse_blocks(out, text, size, &parser);
   if (mkdn->epilog) mkdn->epilog(out, mkdn->udata);
 
   /* release memory */

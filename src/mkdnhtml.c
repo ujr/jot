@@ -303,16 +303,41 @@ html_htmlblock(Blob *out, Blob *text, void *udata)
 
 
 static bool
-html_codespan(Blob *out, const char *text, size_t size, void *udata)
+html_codespan(Blob *out, Blob *code, void *udata)
 {
   struct html *phtml = udata;
   int quotequot = phtml->cmout;
-  if (text && size) {
+  if (blob_len(code) > 0) {
     BLOB_ADDLIT(out, "<code>");
-    quote_text(out, text, size, quotequot);
+    quote_text(out, blob_str(code), blob_len(code), quotequot);
     BLOB_ADDLIT(out, "</code>");
   }
   return true;
+}
+
+
+static bool
+html_emphasis(Blob *out, char c, int n, Blob *text, void *udata)
+{
+  UNUSED(udata);
+
+  if (c != '*' && c != '_') return false;
+
+  if (n == 1) {
+    BLOB_ADDLIT(out, "<em>");
+    blob_add(out, text);  /* text already quoted */
+    BLOB_ADDLIT(out, "</em>");
+    return true;
+  }
+
+  if (n == 2) {
+    BLOB_ADDLIT(out, "<strong>");
+    blob_add(out, text);  /* text already quoted */
+    BLOB_ADDLIT(out, "</strong>");
+    return true;
+  }
+
+  return false;
 }
 
 
@@ -483,7 +508,7 @@ mkdnhtml(Blob *out, const char *txt, size_t len, const char *wrap, int pretty)
   rndr.htmlblock = html_htmlblock;
 
   rndr.codespan = html_codespan;
-  // TODO inline stuff
+  rndr.emphasis = html_emphasis;
   rndr.link = html_link;
   rndr.image = html_image;
   rndr.autolink = html_autolink;

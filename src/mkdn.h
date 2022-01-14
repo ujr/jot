@@ -27,7 +27,7 @@ struct markdown {
 
   /* span callbacks */
   bool (*emphasis)(Blob *out, char c, int n, Blob *text, void *udata);
-  bool (*codespan)(Blob *out, const char *text, size_t size, void *udata);
+  bool (*codespan)(Blob *out, Blob *code, void *udata);
   bool (*link)(Blob *out, Blob *link, Blob *title, Blob *body, void *udata);
   bool (*image)(Blob *out, Blob *link, Blob *title, Blob *alt, void *udata);
   bool (*autolink)(Blob *out, char type, const char *text, size_t size, void *udata);
