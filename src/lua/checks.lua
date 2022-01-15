@@ -143,4 +143,39 @@ end
 assert(not jot.exists(dir))
 
 
+log.info("Checking Markdown rendering");
+mkdnskip = {
+  [618]="be laxer on html",
+  [620]="be laxer on html",
+  [621]="be laxer on html",
+  [625]="be laxer on html comment; CM is XML strict",
+  [626]="be laxer on html comment; CM is XML strict",
+  [999]="reason"
+}
+numfail = 0
+first = nil
+last = nil
+function Test(t)
+  if first and t.number < first then return end
+  if last and t.number > last then return end
+  if mkdnskip[t.number] then
+    log.debug(string.format("mkdn SKIP test #%d (%s)", t.number, mkdnskip[t.number]))
+    return
+  end
+  local r = jot.markdown(t.input)
+  if r ~= t.result then
+    numfail = numfail + 1
+    log.error(string.format("mkdn FAIL test #%d on %s", t.number, t.section))
+    log.trace("Input: " .. t.input)
+    log.trace("Output: " .. r)
+    log.trace("Expected: " .. t.result)
+  else
+    log.debug(string.format("mkdn pass test #%d on %s", t.number, t.section))
+  end
+end
+env = { Test = Test }
+loadfile("../test/spec.lua", "t", env)()
+assert(numfail == 0, "Failed CommonMark test(s): " .. numfail)
+
+
 log.info("OK");

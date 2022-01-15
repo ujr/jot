@@ -197,33 +197,6 @@ tagname_find(const char *text, size_t size)
 }
 
 
-/** return length of HTML tag at text or 0 if malformed */
-static size_t
-taglength(const char *text, size_t size)
-{
-  size_t len = 0;
-  /* <x> is shortest possible tag */
-  if (size < 3) return 0;
-  if (text[len] != '<') return 0;
-  if (text[++len] == '/') len++;
-  if (!ISALPHA(text[len])) return 0;
-  while (len < size && (ISALNUM(text[len]) || text[len] == '-')) len++;
-  if (len >= size) return 0;
-  int c = text[len];
-  if (c == '/' && len+1 < size && text[len+1] == '>') return len+2;
-  if (c != '>' && !ISSPACE(c)) return 0;
-  /* scan over (possibly quoted) attributes: */
-  int quote = 0;
-  while (len < size && (c=text[len]) != 0 && (c != '>' || quote)) {
-    if (c == quote) quote = 0;
-    else if (!quote && (c == '"' || c == '\'')) quote = c;
-    len++;
-  }
-  if (len >= size || text[len] != '>') return 0;
-  return len+1;
-}
-
-
 static int
 linkdef_cmp(const void *a, const void *b)
 {
@@ -253,6 +226,98 @@ linkdef_find(
   if (link) *link = ptr->link;
   if (title) *title = ptr->title;
   return 1;
+}
+
+
+static size_t
+scan_comment(const char *text, size_t size)
+{
+  size_t j;
+  if (size < 7) return 0;  /* <!----> is shortest comment */
+  if (text[0] != '<' || text[1] != '!' ||
+      text[2] != '-' || text[3] != '-') return 0;
+  for (j = 6; j < size; ) {
+    const char *p = memchr(text+j, '>', size-j);
+    if (!p) break;
+    j = p - text + 1;
+    if (p[-1] == '-' && p[-2] == '-') return j;
+  }
+  return 0;
+}
+
+
+static size_t
+scan_procinst(const char *text, size_t size)
+{
+  size_t j;
+  if (size < 4) return 0;  /* <??> is shortest proc inst */
+  if (text[0] != '<' || text[1] != '?') return 0;
+  for (j = 3; j < size; ) {
+    const char *p = memchr(text+j, '>', size-j);
+    if (!p) break;
+    j = p - text + 1;
+    if (p[-1] == '?') return j;
+  }
+  return 0;
+}
+
+
+static size_t
+scan_cdata(const char *text, size_t size)
+{
+  size_t j;
+  if (size < 12) return 0;  /* <![CDATA[]]> is shortest */
+  if (strncmp("<![CDATA[", text, 8) != 0) return 0;
+  for (j = 12; j < size; ) {
+    const char *p = memchr(text+j, '>', size-j);
+    if (!p) break;
+    j = p - text + 1;
+    if (p[-2] == ']' && p[-1] == ']') return j;
+  }
+  return 0;
+}
+
+
+/** return length of HTML tag at text or 0 if malformed */
+static size_t
+scan_tag(const char *text, size_t size)
+{
+  size_t len;
+  int closing = 0, quote, c;
+  /* <x> is shortest possible tag */
+  if (size < 3) return 0;
+  if (text[0] != '<') return 0;
+
+  if (text[1] == '?')
+    return scan_procinst(text, size);
+  if (text[1] == '!' && text[2] == '-')
+    return scan_comment(text, size);
+  if (text[1] == '!' && text[2] == '[')
+    return scan_cdata(text, size);
+
+  len = 1;
+  if (text[1] == '/') { ++len; closing=1; }
+  else if (text[1] == '!') { ++len; }  /* treat decls as regular tags */
+  if (!ISALPHA(text[len])) return 0;
+  while (len < size && (ISALNUM(text[len]) || text[len] == '-')) len++;
+  while (len < size && ISBLANK(text[len])) len++;
+  if (len >= size) return 0;
+  if (text[len] == '>') return len+1;
+  if (closing) return 0; /* closing tag cannot have attrs */
+  if (text[len] == '/') {
+    len += 1;
+    return len < size && text[len] == '>' ? len+1 : 0;
+  }
+  if (!ISBLANK(text[len-1])) return 0;  /* attrs must be separated */
+  /* scan over (possibly quoted) attributes: */
+  quote = 0;
+  while (len < size && (c=text[len]) != 0 && (c != '>' || quote)) {
+    if (c == quote) quote = 0;
+    else if (!quote && (c == '"' || c == '\'')) quote = c;
+    len++;
+  }
+  if (len >= size || text[len] != '>') return 0;
+  return len+1;
 }
 
 
@@ -457,11 +522,13 @@ scan_full_link(const char *text, size_t size, Parser *parser,
   /* link must follow immediately (no blanks) */
   if (j < size && text[j] == '(') {  /* inline link */
     len = scan_inline_link(text+j, size-j, linkslice, titleslice);
-    return len ? j+len : 0;
+    if (len) return j+len;
+    /* else: could still be a reference or shortcut link! */
   }
   if (j < size && text[j] == '[') {
     len = scan_link_label(text+j, MIN(size-j, 999));
     if (len < 2) return 0;
+    if (!parser) return j+len;
     if (len == 2) {  /* collapsed link: [] */
       if (!linkdef_find(bodyptr, bodylen, parser, linkslice, titleslice))
         return 0;
@@ -470,53 +537,56 @@ scan_full_link(const char *text, size_t size, Parser *parser,
       if (!linkdef_find(text+j+1, len-2, parser, linkslice, titleslice))
         return 0;
     }
-    return j + len;  /* consume the ']' */
+    return j + len;
   }
   /* shortcut link (no label at all, just text in brackets) */
+  if (!parser) return j;
   return linkdef_find(bodyptr, bodylen, parser, linkslice, titleslice) ? j : 0;
 }
 
 
-/** skip over link/image: assume text[0] is opening bracket; always return > 0 */
 static size_t
-skip_full_link(const char *text, size_t size)
+scan_tickrun(const char *text, size_t size)
 {
-  size_t j = 0, len;
-  const size_t mismatch = 1;  /* mismatch means lonely bracket, thus length 1 */
-  len = scan_link_body(text, size);
-  if (!len) return mismatch;
-  j += len;
-  if (j < size && text[j] == '(') {
-    len = scan_inline_link(text+j, size-j, 0, 0);
-    return len ? j+len : mismatch;
-  }
-  if (j < size && text[j] == '[') {
-    len = scan_link_label(text+j, MIN(size-j, 999));
-    return len ? j+len : mismatch;
-  }
+  size_t j;
+  if (!size) return 0;
+  for (j=1; j < size && text[j] == text[0]; j++);
   return j;
 }
 
 
-/** skip over codespan; assume text[0] is start tick; always return > 0 */
 static size_t
-skip_codespan(const char *text, size_t size)
+scan_codespan(const char *text, size_t size, struct slice *codeslice)
 {
+  /* text enclosed in backtick strings of equal length;
+     if blanks at start AND end, trim ONE on each side */
   size_t j, oticks, cticks;
   char delim;
 
-  assert(size > 0);
+  if (size < 2) return 0;
   delim = text[0];
   for (j = 1; j < size && text[j] == delim; j++);
   oticks = j;
 
-  for (cticks = 0; j < size && cticks < oticks; j++) {
+  for (cticks = 0; j < size; j++) {
     if (text[j] == delim) cticks += 1;
+    else if (cticks == oticks) break;
     else cticks = 0;
+    // TODO if blank line: stop (not a codespan)
   }
 
-  /* past closing ticks if closed; else past opening ticks: */
-  return cticks == oticks ? j : oticks;
+  if (cticks != oticks) return 0;
+
+  if (codeslice) {
+    size_t i = oticks, k = j-cticks;
+    /* trim one blank if begins&ends with blank (or newline): */
+    if (i+2 < k && ISSPACE(text[i]) && ISSPACE(text[k-1])) {
+      i += 1; k -= 1;
+    }
+    *codeslice = slice(text+i, k-i);
+  }
+
+  return j;
 }
 
 
@@ -524,18 +594,20 @@ skip_codespan(const char *text, size_t size)
 static size_t
 scan_span(const char *text, size_t size, char c)
 {
-  size_t j = 0;
+  size_t j = 0, len;
   while (j < size) {
     while (j < size && text[j] != c && text[j] != '[' && text[j] != '`') j++;
     if (j >= size) return 0;
     if (j && text[j-1] == '\\') { j++; continue; }  /* escaped */
     if (text[j] == c) return j;  /* found */
     if (text[j] == '`') {  /* skip codespan */
-      j += skip_codespan(text+j, size-j);
+      len = scan_codespan(text+j, size-j, 0);
+      if (len) j += len; else j += 1;  /* span or lonely backtick */
       continue;
     }
     if (text[j] == '[') {  /* skip link or image */
-      j += skip_full_link(text+j, size-j);
+      len = scan_full_link(text+j, size-j, 0, 0, 0, 0);
+      if (len) j += len; else j += 1;  /* link or lonely bracket */
       continue;
     }
     assert(NOT_REACHED);
@@ -604,8 +676,10 @@ parse_inlines(Blob *out, const char *text, size_t size, Parser *parser)
       i = j;
     }
     if (j >= size) break;
+    parser->nesting_depth++;
     assert(action != 0);
     n = action(out, text+j, size-j, j, parser);
+    parser->nesting_depth--;
     if (n) { j += n; i = j; } else j += 1;
   }
 }
@@ -863,37 +937,27 @@ do_codespan(
   Blob *out, const char *text, size_t size, size_t prefix, Parser *parser)
 {
   Blob *body;
-  size_t i, j, end, oticks, cticks;
-  char delim;
+  struct slice codeslice;
+  size_t len;
   int ok;
   UNUSED(prefix);
 
-  if (size < 2) return 0;
-  delim = text[0];
-  for (j = 1; j < size && text[j] == delim; j++);
-  oticks = j;
-
-  for (cticks = 0; j < size && cticks < oticks; j++) {
-    if (text[j] == delim) cticks += 1;
-    else cticks = 0;
+  len = scan_codespan(text, size, &codeslice);
+  if (!len) {  /* emit tick run (override parse_inline's one char default) */
+    len = scan_tickrun(text, size);
+    if (parser->render.text)
+        parser->render.text(out, text, len, parser->udata);
+    else blob_addbuf(out, text, len);
+    return len;
   }
 
-  if (cticks < oticks) return 0;
-
-  i = oticks; end = j; j -= cticks;
-
-  /* begins and ends with blank? trim one blank: */
-  if (i+2 < j && text[i] == ' ' && text[j-1] == ' ') {
-    i++; j--;
-  }
-
-  /* by CM 6.1 newlines are converted to blanks! */
   body = pool_get(parser);
-  emit_codespan(body, text+i, j-i);
+  /* by CM 6.1, convert newlines to blanks: */
+  emit_codespan(body, codeslice.s, codeslice.n);
   assert(parser->render.codespan != 0);
-  ok = parser->render.codespan(out, body, parser->udata) ? end : 0;
+  ok = parser->render.codespan(out, body, parser->udata) ? len : 0;
   pool_put(parser, body);
-  return ok ? end : 0;
+  return ok ? len : 0;
 }
 
 
@@ -905,7 +969,7 @@ do_anglebrack(
   char type;
   size_t len;
   UNUSED(prefix);
-  len = taglength(text, size);
+  len = scan_tag(text, size);
   if (len) {
     if (parser->render.htmltag)
       parser->render.htmltag(out, text, len, parser->udata);
@@ -1553,15 +1617,16 @@ is_htmlline(const char *text, size_t size, int *pkind, Parser *parser)
       return j+1;
     }
     else if (j < size && (text[j] == '>' || ISSPACE(text[j]) ||
-                         (j+1 < size && text[j] == '/' && text[j] == '>'))) {
+                         (j+1 < size && text[j] == '/' && text[j+1] == '>'))) {
       if (pkind) *pkind = 6;
-      return text[j] == '/' ? j+1 : j+2;
+      return text[j] == '/' ? j+2 : j+1;
     }
     return 0;
   }
-  if ((len = taglength(text+i, size-i))) {
+  if ((len = scan_tag(text+i, size-i)) &&
+      is_blankline(text+i+len, size-i-len)) {
     if (pkind) *pkind = 7;
-    return j + len;
+    return i + len;
   }
   return 0;
 }
@@ -1591,28 +1656,26 @@ parse_htmlblock(Blob *out, const char *text, size_t size, size_t startlen, int k
     return j;
   }
 
-  switch (kind) {
-    case 1: j += 6; break;
-    case 2: j += 3; break;
-    case 3: j += 2; break;
-    case 4: j += 1; break;
-    case 5: j += 3; break;
-    default: assert(INVALID_HTMLBLOCK_KIND); break;
-  }
-
   while (j < size) {
     const char *p = memchr(text+j, '>', size-j);
     if (!p) { j = size; break; }  /* not found: to end of block or file */
     j = p - text + 1;
-    if ((kind == 2 && p >= text+j+2 && p[-2] == '-' && p[-1] == '-') ||
-        (kind == 3 && p >= text+j+1 &&                 p[-1] == '?') ||
-        (kind == 4)                                                  ||
-        (kind == 5 && p >= text+j+2 && p[-2] == ']' && p[-1] == ']') ||
-        (kind == 1 && (!memcmp("</pre", p-5, 5) || !memcmp("</script", p-8, 8) ||
-                       !memcmp("</style", p-7, 7) || !memcmp("</textarea", p-10, 10)))) {
+    if ((kind == 2 && p >= text+ 6 && p[-2] == '-' && p[-1] == '-') ||
+        (kind == 3 && p >= text+ 5 &&                 p[-1] == '?') ||
+        (kind == 4)                                                 ||
+        (kind == 5 && p >= text+11 && p[-2] == ']' && p[-1] == ']')) {
       break;  /* end condition found */
     }
+    else if (kind == 1) { // TODO ignore case!
+      if (p >= text+10 && !memcmp("</pre", p-5, 5)) break;
+      if (p >= text+16 && !memcmp("</script", p-8, 8)) break;
+      if (p >= text+14 && !memcmp("</style", p-7, 7)) break;
+      if (p <= text+20 && !memcmp("</textarea", p-10, 10)) break;
+    }
   }
+
+  /* scan to end of line (cf CM 4.6): */
+  j += scan_line(text+j, size-j);
 
   if (parser->render.htmlblock) {
     Blob html = { (char *) text, j, 0 };  /* static blob */
@@ -1640,6 +1703,7 @@ parse_paragraph(Blob *out, const char *text, size_t size, Parser *parser)
     if (is_hrule(text+j, len)) break;
     if (is_fenceline(text+j, len)) break;
     if (is_itemline(text+j, len, 0, 0)) break;
+    if (is_htmlline(text+j, len, 0, parser)) break;
     for (k = 0; k < len && ISBLANK(text[j+k]); k++);
     blob_addbuf(temp, text+j+k, len-k);
     /* NOTE trailing blanks and breaks handled by inline parsing */

@@ -34,6 +34,8 @@
 /* the empty string causes a syntax error if not a literal string;
    and `-1` is necessary because sizeof includes the \0 terminator */
 
+#define URLENCODE " \"<`>[\\]"  /* chosen mainly such that CM tests succeed */
+
 
 struct html {
   const char *wrapperclass;
@@ -344,13 +346,11 @@ html_emphasis(Blob *out, char c, int n, Blob *text, void *udata)
 static bool
 html_link(Blob *out, Blob *link, Blob *title, Blob *body, void *udata)
 {
+  UNUSED(udata);
   /* <a href="LINK" title="TITLE">BODY</a> */
-  struct html *phtml = udata;
-  int quotequot = phtml->cmout;
 
   BLOB_ADDLIT(out, "<a href=\"");
-  // TODO url encode: blank " \ (but not %, as we assume this is valid)
-  quote_attr(out, blob_str(link), blob_len(link), " \\\"<&>");
+  quote_attr(out, blob_str(link), blob_len(link), URLENCODE);
   blob_addchar(out, '"');
   if (blob_len(title) > 0) {
     BLOB_ADDLIT(out, " title=\"");
@@ -358,7 +358,7 @@ html_link(Blob *out, Blob *link, Blob *title, Blob *body, void *udata)
     blob_addchar(out, '"');
   }
   blob_addchar(out, '>');
-  quote_text(out, blob_str(body), blob_len(body), quotequot);
+  blob_add(out, body);
   BLOB_ADDLIT(out, "</a>");
   return true;
 }
@@ -370,7 +370,7 @@ html_image(Blob *out, Blob *src, Blob *title, Blob *alt, void *udata)
   /* <img src="SRC" title="TITLE" alt="ALT" /> */
   struct html *phtml = udata;
   BLOB_ADDLIT(out, "<img src=\"");
-  quote_attr(out, blob_str(src), blob_len(src), " \\\"<&>");
+  quote_attr(out, blob_str(src), blob_len(src), URLENCODE);
   blob_addchar(out, '"');
   if (blob_len(alt) > 0 || phtml->cmout) {
     BLOB_ADDLIT(out, " alt=\"");
@@ -401,7 +401,7 @@ html_autolink(Blob *out, char type, const char *text, size_t size, void *udata)
 
   BLOB_ADDLIT(out, "<a href=\"");
   if (implicit_mail) BLOB_ADDLIT(out, "mailto:");
-  quote_attr(out, text, size, " \\\"<&>");
+  quote_attr(out, text, size, URLENCODE);
   BLOB_ADDLIT(out, "\">");
   if (explicit_mail)
     quote_text(out, text+7, size-7, quotequot);
