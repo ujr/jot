@@ -96,6 +96,77 @@ typedef struct linkdef {
 } Linkdef;
 
 
+/** Pooled Memory Allocation **/  // TODO refactor out to its own file
+
+/* allows allocation from (larger) chunks that can be
+   released all at once; got idea from Hipp's unql code */
+
+typedef struct pool Pool;
+typedef struct chunk Chunk;
+
+struct chunk {
+  Chunk *next;          /* link to next mem chunk */
+};
+
+struct pool {
+  Chunk *chunk;         /* head of list of mem chunks */
+  char *ptr;            /* memory for allocation in this chunk */
+  size_t avail;         /* bytes still available in this chunk */
+  size_t alloc;         /* chunk size */
+};
+
+#define POOL_INIT { 0, 0, 0, 0 }
+
+void
+mem_pool_init(Pool *pool, size_t chunk_size)
+{
+  assert(pool);
+  if (!chunk_size) chunk_size = 4000;
+  memset(pool, 0, sizeof(*pool));
+  pool->alloc = chunk_size;
+}
+
+void
+mem_pool_free(Pool *pool)
+{
+  Chunk *chunk, *next;
+  assert(pool);
+  for (chunk = pool->chunk; chunk; chunk = next) {
+    next = chunk->next;
+    free(chunk);
+  }
+  memset(pool, 0, sizeof(*pool));
+}
+
+void *
+mem_pool_alloc(Pool *pool, size_t n)
+{
+  void *p;
+  assert(pool);
+  n = (n+7)&~7;  /* round up to multiple of 8 */
+  if (n > pool->alloc/2) {  /* large alloc gets its own chunk */
+    Chunk *chunk = malloc(n+8);
+    if (!chunk) return 0;
+    chunk->next = pool->chunk;
+    pool->chunk = chunk;
+    return &((char*) chunk)[8];
+  }
+  if (pool->avail < n) {
+    Chunk *chunk = malloc(pool->alloc + 8);
+    if (!chunk) return 0;
+    chunk->next = pool->chunk;
+    pool->chunk = chunk;
+    pool->ptr = (char *) chunk;
+    pool->ptr += 8;
+    pool->avail = pool->alloc;
+  }
+  p = pool->ptr;
+  pool->ptr += n;
+  pool->avail -= n;
+  return p;
+}
+
+
 /** html block tags, ordered as by tagname_cmp (first len, then lexic) */
 static const struct tagname {
   const char *name;
@@ -1036,10 +1107,10 @@ struct delim {   /* delimiter run */
 struct delimlist {
   struct delim *head;
   struct delim *tail;
-  // TODO allocation pool for delim nodes
+  Pool pool;
 };
 
-#define DELIMLIST_INIT { 0, 0 }
+#define DELIMLIST_INIT { 0, 0, POOL_INIT }
 
 #define DELIM_ACTIVE  1  /* to prevent links within links */
 #define DELIM_OPENER  2
@@ -1071,20 +1142,15 @@ delim_canclose(int before, int delim, int after)
 }
 
 static struct delim *
-delim_make(size_t ofs, size_t len, char type, int flags)
+delim_push(struct delimlist *list, size_t ofs, size_t len, char type, int flags)
 {
-  struct delim *node = malloc(sizeof(*node));
+  struct delim *node = mem_pool_alloc(&list->pool, sizeof(*node));
   assert(node != OUT_OF_MEMORY);
   node->ofs = ofs;
   node->len = len;
   node->type = type;
   node->flags = flags;
-  return node;
-}
 
-static struct delim *
-delim_push(struct delimlist *list, struct delim *node)
-{
   if (!list->head) list->head = node;
   node->next = 0;
   node->prev = list->tail;
@@ -1100,7 +1166,6 @@ delim_drop(struct delimlist *list, struct delim *node)
   else list->head = node->next;
   if (node->next) node->next->prev =node->prev;
   else list->tail = node->prev;
-  free(node);
 }
 
 static bool
@@ -1116,7 +1181,6 @@ is_emph_span(struct delim *opener, struct delim *closer)
        the opening and closing delimiters must not be a multiple of 3 unless
        both lengths are multiples of 3. */
     size_t olen = opener->len, clen = closer->len;
-//    fprintf(stderr, "{olen=%zu clen=%zu}\n", olen, clen);
     if ((olen+clen) %3 == 0 && (olen%3 || clen%3)) return false;
   }
   return true;
@@ -1133,9 +1197,7 @@ dump_delims(struct delimlist *list)
 static void
 free_delims(struct delimlist *list)
 {
-  struct delim *ptr;
-  for (ptr = list->head; ptr; ptr = ptr->next)
-    delim_drop(list, ptr);
+  mem_pool_free(&list->pool);
 }
 
 static void
@@ -1232,11 +1294,11 @@ process_links(struct delimlist *list, const char *text, size_t pos, size_t size,
 static void
 parse_inlines(Blob *out, const char *text, size_t size, Parser *parser)
 {
-  struct delim *ptr;
+  static const char blank = ' ';
   struct delimlist delims = DELIMLIST_INIT;
+  struct delim *ptr;
   SpanTree tree;
   size_t i, j, len;
-  static const char blank = ' ';
 
   /* create span tree, add root */
   initspans(&tree, 0, size, parser);
@@ -1248,13 +1310,13 @@ parse_inlines(Blob *out, const char *text, size_t size, Parser *parser)
       for (i = j++; j < size && text[j] == delim; j++);
       before = i > 0 ? text[i-1] : blank;
       after = j < size ? text[j] : blank;
-      delim_push(&delims, delim_make(i, j-i, delim, DELIM_FLAGS(before, delim, after)));
+      delim_push(&delims, i, j-i, delim, DELIM_FLAGS(before, delim, after));
     }
     else if (text[j] == '[') {
       bool isimg = j > 0 && text[j-1] == '!';
       i = isimg ? j-1 : j;
       j += 1;
-      delim_push(&delims, delim_make(i, j-i, text[i], DELIM_ACTIVE));
+      delim_push(&delims, i, j-i, text[i], DELIM_ACTIVE);
     }
     else if (text[j] == ']') {
       j += process_links(&delims, text, j, size, &tree, parser);
@@ -1263,7 +1325,7 @@ parse_inlines(Blob *out, const char *text, size_t size, Parser *parser)
       struct slice codeslice;
       len = scan_codespan(text+j, size-j, &codeslice);
       if (len) { int flags = (len-codeslice.n)/2; // TODO HACK
-        delim_push(&delims, delim_make(j, len, '`', flags));
+        delim_push(&delims, j, len, '`', flags);
         j += len;
       }
       else j += scan_tickrun(text, size);  /* lonely backtick(s) */
@@ -1271,11 +1333,11 @@ parse_inlines(Blob *out, const char *text, size_t size, Parser *parser)
     else if (text[j] == '<') { char type;
       if ((len = scan_autolink(text+j, size-j, &type))) {
         assert(type == ':' || type == '@');
-        delim_push(&delims, delim_make(j, len, type, 0));
+        delim_push(&delims, j, len, type, 0);
         j += len;
       }
       else if ((len = scan_tag(text+j, size-j))) {
-        delim_push(&delims, delim_make(j, len, '<', 0));
+        delim_push(&delims, j, len, '<', 0);
         j += len;
       }
       else j += 1;  /* lonely angle bracket */
@@ -1585,7 +1647,7 @@ parse_fencedcode(Blob *out, const char *text, size_t size, Parser *parser)
   // - fence block: n ticks, code, n+ ticks, nl; n >= 3; info string
   // In both cases, trim the code.
   */
-  Blob *temp = blob_get(parser);
+  Blob *temp;
   size_t pre, j;
   size_t nopen, nclose;
   size_t infofs, infend;
@@ -1609,6 +1671,8 @@ parse_fencedcode(Blob *out, const char *text, size_t size, Parser *parser)
   while (infend > infofs && ISBLANK(text[infend-1])) infend--;
   if (j < size) j++;
   if (j < size && text[j] == '\n' && text[j-1] == '\r') j++;
+
+  temp = blob_get(parser);
 
   while (j < size) {
     size_t start = j, k, end, n;
@@ -1706,7 +1770,7 @@ is_itemline(const char *text, size_t size, char *ptype, int *pstart)
 static size_t
 parse_listitem(Blob *out, char type, bool *ploose, const char *text, size_t size, Parser *parser)
 {
-  Blob *temp = blob_get(parser);
+  Blob *temp;
   size_t pre, i, j, len, sublist;
   int start;
   char itemtype;
@@ -1721,6 +1785,7 @@ parse_listitem(Blob *out, char type, bool *ploose, const char *text, size_t size
   j = pre;
   wasblank = false;
   sublist = 0;
+  temp = blob_get(parser);
 
   /* scan remainder of first line: */
   for (i=j; j < size && text[j] != '\n' && text[j] != '\r'; j++);
@@ -2132,7 +2197,9 @@ markdown(Blob *out, const char *text, size_t size, struct markdown *mkdn)
   assert(parser.nesting_depth == 0);
   blob_free(&parser.linkdefs);
   while (parser.pool_index > 0) {
-    blob_free(parser.blob_pool[--parser.pool_index]);
+    parser.pool_index--;
+    blob_free(parser.blob_pool[parser.pool_index]);
+    free(parser.blob_pool[parser.pool_index]);
   }
 }
 
