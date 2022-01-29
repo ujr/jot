@@ -99,7 +99,7 @@ blob_addvfmt(Blob *bp, const char *fmt, va_list ap)
 }
 
 
-char * /* ensure enough space for plus more bytes */
+void * /* ensure enough space for plus more bytes */
 blob_prepare(Blob *bp, size_t plus)
 {
   assert(bp != 0);

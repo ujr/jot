@@ -9,11 +9,13 @@ zero-terminated and therefore valid C strings.
 Blob blob = BLOB_INIT;   /* mandatory initialization */
 Blob *bp = &blob;
 
-char *p;
+void *p;
+char *s;
 size_t n;
 int i;
 
 p = blob_buf(bp);        /* pointer to start of buffer */
+s = blob_str(bp);        /* char pointer to start of buffer */
 n = blob_len(bp);        /* blob length in bytes */
 n = blob_size(bp);       /* allocated size in bytes */
 c = blob_byte(bp, i);    /* blob byte at offset i */
@@ -46,8 +48,11 @@ A blob MUST be initialized as in `Blob blob = BLOB_INIT;`
 to start in the unallocated state. Without this initialization
 all operations are undefined.
 
-**blob_buf** returns a pointer to the blob's data area.
-Since a blob guarantees that its contents is always
+**blob_buf** returns an untyped pointer to the blob's data
+area. If your blob contains text, prefer **blob_str** instead.
+
+**blob_str** returns a character pointer to the blob's data
+area. Since a blob guarantees that its contents is always
 zero-terminated, this pointer can be used with functions
 like **puts**(3) or **strcmp**(3).
 

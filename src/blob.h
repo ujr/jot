@@ -17,7 +17,7 @@ struct blob {
 
 #define BLOB_INIT        {0,0,0}
 
-#define blob_buf(bp)     ((bp)->buf)
+#define blob_buf(bp)     ((void *) (bp)->buf)
 #define blob_str(bp)     ((bp)->buf ? (bp)->buf : "")
 #define blob_len(bp)     ((bp)->buf ? (bp)->len : 0)
 #define blob_size(bp)    ((bp)->buf ? ((bp)->size & ~1) : 0)
@@ -31,7 +31,7 @@ void blob_addbuf(Blob *bp, const char *buf, size_t len);
 void blob_addfmt(Blob *bp, const char *fmt, ...);
 void blob_addvfmt(Blob *bp, const char *fmt, va_list ap);
 
-char *blob_prepare(Blob *bp, size_t dlen);
+void *blob_prepare(Blob *bp, size_t dlen);
 void blob_addlen(Blob *bp, size_t dlen);
 
 void blob_trunc(Blob *bp, size_t len);
