@@ -28,6 +28,7 @@
 
 
 #define UNUSED(x) ((void)(x))
+#define ISASCII(c) (0 <= (c) && (c) <= 127)
 #define ISBLANK(c) ((c) == ' ' || (c) == '\t')
 
 #define BLOB_ADDLIT(bp, lit) blob_addbuf((bp), "" lit, (sizeof lit)-1)
@@ -125,15 +126,16 @@ static void
 quote_attr(Blob *out, const char *text, size_t size, const char *encode)
 {
   size_t i, j = 0;
-  const char *p;
-  if (!encode) encode = "";
-  while (j < size) { p = 0;
-    for (i = j; j < size && text[j] != '<' && text[j] != '>' &&
-         text[j] != '&' && text[j] != '"' && text[j] != '\'' &&
-         !(p = strchr(encode, text[j])); j++);
+  while (j < size) {
+    for (i=j; j < size; j++) {
+      if (text[j] == '<' || text[j] == '>' || text[j] == '&' ||
+          text[j] == '"' || text[j] == '\'') break;
+      if (encode && (!ISASCII(text[j]) || strchr(encode, text[j]))) break;
+    }
     if (j > i) blob_addbuf(out, text+i, j-i);
     for (; j < size; j++) {
-      if (strchr(encode, text[j])) blob_addfmt(out, "%%%02X", text[j]);
+      if (encode && (!ISASCII(text[j]) || strchr(encode, text[j])))
+        blob_addfmt(out, "%%%02X", (unsigned char) text[j]);
       else if (text[j] == '<') BLOB_ADDLIT(out, "&lt;");
       else if (text[j] == '>') BLOB_ADDLIT(out, "&gt;");
       else if (text[j] == '&') BLOB_ADDLIT(out, "&amp;");
@@ -260,18 +262,19 @@ html_codeblock(Blob *out, const char *lang, Blob *text, void *udata)
   else {
     BLOB_ADDLIT(out, "<pre><code>");
   }
-  quote_text(out, blob_buf(text), blob_len(text), quotequot);
+  quote_text(out, blob_str(text), blob_len(text), quotequot);
   BLOB_ADDLIT(out, "</code></pre>\n");
 }
 
 
 static void
-html_listitem(Blob *out, Blob *text, void *udata)
+html_listitem(Blob *out, int loose, Blob *text, void *udata)
 {
   UNUSED(udata);
   BLOB_ADDLIT(out, "<li>");
+  if (loose) blob_addchar(out, '\n');
   blob_add(out, text);
-  blob_trimend(out);
+  if (!loose) blob_trimend(out);
   BLOB_ADDLIT(out, "</li>\n");
 }
 
@@ -393,20 +396,22 @@ html_autolink(Blob *out, char type, const char *text, size_t size, void *udata)
 {
   struct html *phtml = udata;
   int quotequot = phtml->cmout;
-  bool explicit_mail, implicit_mail;
+  bool ismail = type == '@';
 
   if (!text || !size) return false;
-  explicit_mail = type == 'M';
-  implicit_mail = type == '@';
+
+  if (size > 7 && strncmp("mailto:", text, 7) == 0) {
+    text += 7;
+    size -= 7;
+  }
 
   BLOB_ADDLIT(out, "<a href=\"");
-  if (implicit_mail) BLOB_ADDLIT(out, "mailto:");
+  if (ismail) BLOB_ADDLIT(out, "mailto:");
   quote_attr(out, text, size, URLENCODE);
   BLOB_ADDLIT(out, "\">");
-  if (explicit_mail)
-    quote_text(out, text+7, size-7, quotequot);
-  else quote_text(out, text, size, quotequot);
+  quote_text(out, text, size, quotequot);
   BLOB_ADDLIT(out, "</a>");
+
   return true;
 }
 
@@ -489,6 +494,7 @@ mkdnhtml(Blob *out, const char *txt, size_t len, const char *wrap, int pretty)
   memset(&rndr, 0, sizeof(rndr));
 
   rndr.udata = &opts;
+  rndr.emphchars = 0;  /* use defaults */
 
   if (wrap) {
     rndr.prolog = html_prolog;
