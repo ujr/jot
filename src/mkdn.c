@@ -63,6 +63,7 @@ typedef size_t (*CharProc)(
 struct parser {
   struct markdown render;
   void *udata;
+  int debug;
   int nesting_depth;
   int in_link;               /* to inhibit links within links */
   Blob linkdefs;             /* collected link definitions */
@@ -910,7 +911,6 @@ addspan(SpanTree *tree, char type, size_t m, size_t ofs, size_t len)
   struct span *span, *spans;
   static const size_t root = 1;
 
-//  fprintf(stderr, "{addspan '%c' m=%zu ofs=%zu len=%zu}\n", type, m, ofs, len);
   span = blob_prepare(tree->blob, sizeof(*span));
   span->type = type;
   span->m = m;
@@ -1021,6 +1021,7 @@ emit_span(Blob *out, const char *text, SpanTree *tree, size_t span, Parser *pars
     size_t bodynode;
     struct slice linkslice, titleslice;
     get_link_parts(tree, span, &bodynode, &linkslice, &titleslice);
+    // TODO for images, plain text only (strip markdown), as it goes to alt attr
     emit_spans(body, text, tree, bodynode, parser);  /* nested spans */
     do_escapes(link, linkslice.s, linkslice.n);
     do_escapes(title, titleslice.s, titleslice.n);
@@ -1146,6 +1147,7 @@ delim_push(struct delimlist *list, size_t ofs, size_t len, char type, int flags)
 {
   struct delim *node = mem_pool_alloc(&list->pool, sizeof(*node));
   assert(node != OUT_OF_MEMORY);
+  memset(node, 0, sizeof(*node));
   node->ofs = ofs;
   node->len = len;
   node->type = type;
@@ -1162,6 +1164,11 @@ delim_push(struct delimlist *list, size_t ofs, size_t len, char type, int flags)
 static void
 delim_drop(struct delimlist *list, struct delim *node)
 {
+  assert(!node->prev || node->prev->next == node);
+  assert(node->prev || list->head == node);
+  assert(!node->next || node->next->prev == node);
+  assert(node->next || list->tail == node);
+
   if (node->prev) node->prev->next = node->next;
   else list->head = node->next;
   if (node->next) node->next->prev =node->prev;
@@ -1198,6 +1205,7 @@ static void
 free_delims(struct delimlist *list)
 {
   mem_pool_free(&list->pool);
+  list->head = list->tail = 0;
 }
 
 static void
@@ -1225,7 +1233,7 @@ process_emphasis(struct delimlist *list, struct delim *start, size_t end, SpanTr
       size_t len = closer->ofs + m - ofs;
       addspan(tree, opener->type, m, ofs, len);
       /* drop emph delims between opener and closer: */
-      for (ptr = opener->next; ptr < closer; ptr = ptr->next)
+      for (ptr = opener->next; ptr && ptr != closer; ptr = ptr->next)
         if (strchr(parser->emphchars, ptr->type))
           delim_drop(list, ptr);
       /* shorten or drop opener&closer items: */
@@ -1255,7 +1263,7 @@ process_links(struct delimlist *list, const char *text, size_t pos, size_t size,
   */
   struct delim *start, *ptr;
   struct slice linkslice, titleslice;
-  size_t end;
+  size_t ofs, end;
 
   /* look back for opening bracket: */
   for (start = list->tail; start; start = start->prev)
@@ -1267,7 +1275,8 @@ process_links(struct delimlist *list, const char *text, size_t pos, size_t size,
   }
 
   /* look ahead for rest of link/image: */
-  end = scan_link_tail(text, size, start->ofs, pos, parser, &linkslice, &titleslice);
+  ofs = start->ofs + (start->type == '!' ? 1 : 0);
+  end = scan_link_tail(text, size, ofs, pos, parser, &linkslice, &titleslice);
   if (!end) {
     delim_drop(list, start);
     return 1;
@@ -1354,7 +1363,6 @@ parse_inlines(Blob *out, const char *text, size_t size, Parser *parser)
   /* now codespans, autolinks, rawhtml may still remain: */
   for (ptr = delims.head; ptr; ptr = ptr->next) {
     if (ptr->type == '`' || ptr->type == ':' || ptr->type == '@' || ptr->type == '<') {
-//      fprintf(stderr, "{type %c ofs %zu len %zu}\n", ptr->type, ptr->ofs, ptr->len);
       addspan(&tree, ptr->type, ptr->flags, ptr->ofs, ptr->len);
     }
   }
@@ -2111,13 +2119,14 @@ parse_blocks(Blob *out, const char *text, size_t size, Parser *parser)
 
 
 static void
-init(Parser *parser, struct markdown *mkdn)
+init(Parser *parser, struct markdown *mkdn, int debug)
 {
   assert(parser != 0);
   assert(mkdn != 0);
 
   parser->render = *mkdn;
   parser->udata = mkdn->udata;
+  parser->debug = debug < 1 ? 0 : debug;
   parser->nesting_depth = 0;
   parser->in_link = 0;
   parser->linkdefs = (Blob) BLOB_INIT;
@@ -2155,7 +2164,7 @@ init(Parser *parser, struct markdown *mkdn)
 
 
 void
-markdown(Blob *out, const char *text, size_t size, struct markdown *mkdn)
+markdown(Blob *out, const char *text, size_t size, struct markdown *mkdn, int debug)
 {
   size_t start;
   Parser parser;
@@ -2163,7 +2172,7 @@ markdown(Blob *out, const char *text, size_t size, struct markdown *mkdn)
   if (!text || !size || !mkdn) return;
   assert(out != NULL);
 
-  init(&parser, mkdn);
+  init(&parser, mkdn, debug);
 
   /* 1st pass: collect references */
   for (start = 0; start < size; ) {
@@ -2216,6 +2225,7 @@ main(int argc, char **argv)
   Blob output = BLOB_INIT;
   char buf[2048];
   size_t n;
+  const int debug = 1;
 
   if (argc > 1) {
     FILE *fp = fopen(argv[1], "r");
@@ -2231,7 +2241,7 @@ main(int argc, char **argv)
     }
   }
 
-  mkdnhtml(&output, blob_str(&input), blob_len(&input), 0, 256);
+  mkdnhtml(&output, blob_str(&input), blob_len(&input), 0, 256, debug);
 
   fputs(blob_str(&output), stdout);
   fflush(stdout);

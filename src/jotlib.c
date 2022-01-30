@@ -476,9 +476,11 @@ jot_markdown(lua_State *L)
   Blob *pout = &blob;
   const char *s;
   size_t len;
+  int debug;
 
   s = luaL_checklstring(L, 1, &len);
-  mkdnhtml(pout, s, len, 0, 256);
+  debug = luaL_optinteger(L, 2, 0);
+  mkdnhtml(pout, s, len, 0, 256, debug);
 
   s = blob_str(pout);
   len = blob_len(pout);

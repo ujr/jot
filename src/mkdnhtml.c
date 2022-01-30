@@ -42,6 +42,7 @@ struct html {
   const char *wrapperclass;
   bool cmout;  /* output as in CommonMark tests */
   int pretty;  /* prettiness; 0=dense, 1=looser, ... */
+  int debug;   /* tentative */
 };
 
 
@@ -485,7 +486,7 @@ html_text(Blob *out, const char *text, size_t size, void *udata)
 
 
 void
-mkdnhtml(Blob *out, const char *txt, size_t len, const char *wrap, int pretty)
+mkdnhtml(Blob *out, const char *txt, size_t len, const char *wrap, int pretty, int debug)
 {
   struct markdown rndr;
   struct html opts;
@@ -503,6 +504,7 @@ mkdnhtml(Blob *out, const char *txt, size_t len, const char *wrap, int pretty)
   }
   opts.pretty = pretty & 255;
   opts.cmout = !!(pretty & 256);
+  opts.debug = debug;
 
   rndr.heading = html_heading;
   rndr.paragraph = html_paragraph;
@@ -524,5 +526,5 @@ mkdnhtml(Blob *out, const char *txt, size_t len, const char *wrap, int pretty)
   rndr.entity = html_entity;
   rndr.text = html_text;
 
-  markdown(out, txt, len, &rndr);
+  markdown(out, txt, len, &rndr, debug);
 }
