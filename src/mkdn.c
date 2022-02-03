@@ -97,7 +97,7 @@ typedef struct linkdef {
 } Linkdef;
 
 
-/** Pooled Memory Allocation **/  // TODO refactor out to its own file
+/* === Pooled Memory Allocation === */  // TODO refactor out to its own file
 
 /* allows allocation from (larger) chunks that can be
    released all at once; got idea from Hipp's unql code */
@@ -303,7 +303,52 @@ linkdef_find(
 }
 
 
-/** scan [ \t]*\n?[ \t]* i.e. space but at most one newline */
+/* === housekeeping === */
+
+static Blob*
+blob_get(Parser *parser)
+{
+  static const Blob empty = BLOB_INIT;
+  Blob *ptr;
+  if (parser->pool_index > 0)
+    return parser->blob_pool[--parser->pool_index];
+  ptr = malloc(sizeof(*ptr));
+  if (!ptr) {
+    perror("malloc");
+    abort(); // TODO error handler
+  }
+  *ptr = empty;
+  return ptr;
+}
+
+
+static void
+blob_put(Parser *parser, Blob *blob)
+{
+  if (!blob) return;
+  if (parser->pool_index < ARLEN(parser->blob_pool)) {
+    blob_clear(blob);
+    parser->blob_pool[parser->pool_index++] = blob;
+  }
+  else {
+    log_debug("mkdn: blob pool exhausted; freeing blob instead of caching");
+    blob_free(blob);
+    free(blob);
+  }
+}
+
+
+static bool
+too_deep(Parser *parser)
+{
+  return parser->nesting_depth > 100;
+}
+
+
+/* === lexical scanning === */
+
+
+/** scan white space but at most one newline */
 static size_t
 scan_innerspace(const char *text, size_t size)
 {
@@ -569,6 +614,14 @@ scan_link_tail(
   const char *text, size_t size, size_t bodyofs, size_t bodyend,
   Parser *parser, struct slice *linkslice, struct slice *titleslice)
 {
+  /* There are our types of links: all start with [body], which was
+  // already parsed and is available through bodyofs and bodyend:
+  // - inline:    [text](dest "title")
+  // - reference: [text][ref]
+  // - collapsed: [text][]     let ref = text
+  // - shortcut:  [text]       let ref = text
+  //       bodyofs^     ^bodyend
+  */
   size_t j = bodyend+1, len;
   const char *bodyptr = text+bodyofs+1;
   size_t bodylen = bodyend-bodyofs-1;
@@ -602,6 +655,49 @@ scan_link_tail(
   if (!parser) return j;
   return linkdef_find(bodyptr, bodylen, parser, linkslice, titleslice) ? j : 0;
 }
+
+
+#if 0
+static size_t
+scan_link_body(const char *text, size_t size)
+{
+  size_t j = 0;
+  int level;
+
+  if (j >= size || text[j] != '[') return 0;
+  /* allow balanced brackets while looking for closing bracket: */
+  for (level = 1, ++j; j < size; j++) {
+    if (text[j] == '\\') { j++; continue; }
+    if (text[j] == '[') level += 1;
+    else if (text[j] == ']') {
+      if (--level <= 0) break;
+    }
+  }
+  if (j >= size) return 0;  /* unmatched '[' */
+  return j+1;  /* include closing bracket */
+}
+
+
+/** scan full link: inline, reference, collapsed, or shortcut */
+static size_t
+scan_full_link(const char *text, size_t size, Parser *parser,
+  struct slice *bodyslice, struct slice *linkslice, struct slice *titleslice)
+{
+  const char *bodyptr;
+  size_t j = 0, len, bodylen;
+
+  if (size < 2 || text[j] != '[') return 0;
+  len = scan_link_body(text, size);
+  if (!len) return 0;
+  j += len;
+
+  bodyptr = text+1;
+  bodylen = len-2;
+  if (bodyslice) *bodyslice = slice(bodyptr, bodylen);
+
+  return scan_link_tail(text, size, 0, len, parser, linkslice, titleslice);
+}
+#endif
 
 
 static size_t
@@ -646,46 +742,6 @@ scan_codespan(const char *text, size_t size, struct slice *codeslice)
   }
 
   return j;
-}
-
-
-static Blob*
-blob_get(Parser *parser)
-{
-  static const Blob empty = BLOB_INIT;
-  Blob *ptr;
-  if (parser->pool_index > 0)
-    return parser->blob_pool[--parser->pool_index];
-  ptr = malloc(sizeof(*ptr));
-  if (!ptr) {
-    perror("malloc");
-    abort(); // TODO error handler
-  }
-  *ptr = empty;
-  return ptr;
-}
-
-
-static void
-blob_put(Parser *parser, Blob *blob)
-{
-  if (!blob) return;
-  if (parser->pool_index < ARLEN(parser->blob_pool)) {
-    blob_clear(blob);
-    parser->blob_pool[parser->pool_index++] = blob;
-  }
-  else {
-    log_debug("mkdn: blob pool exhausted; freeing blob instead of caching");
-    blob_free(blob);
-    free(blob);
-  }
-}
-
-
-static bool
-too_deep(Parser *parser)
-{
-  return parser->nesting_depth > 100;
 }
 
 
@@ -834,7 +890,7 @@ emit_codespan(Blob *out, const char *text, size_t size)
 }
 
 
-/* ===================== */
+/* === tree of inline spans === */
 
 
 typedef struct span Span;
@@ -852,6 +908,7 @@ struct spantree {
   Blob *blob;           /* node storage */
 };
 
+#if 0
 static void
 dump_spans(SpanTree *tree)
 {
@@ -863,6 +920,7 @@ dump_spans(SpanTree *tree)
       i, spans[i].type, spans[i].m, spans[i].ofs, spans[i].len, spans[i].down, spans[i].next);
   }
 }
+#endif
 
 /** make span tree; add root span; all spans must be inside root */
 static void
@@ -974,6 +1032,10 @@ addspan(SpanTree *tree, char type, size_t m, size_t ofs, size_t len)
 //       last(i) = j
 //       i = j
 */
+
+
+/* === inline parsing === */
+
 
 static void
 emit_spans(Blob *out, const char *text, SpanTree *tree, size_t span, Parser *parser);
@@ -1194,6 +1256,7 @@ is_emph_span(struct delim *opener, struct delim *closer)
   return true;
 }
 
+#if 0
 static void
 dump_delims(struct delimlist *list)
 {
@@ -1201,6 +1264,7 @@ dump_delims(struct delimlist *list)
   for (ptr = list->head; ptr; ptr = ptr->next)
     fprintf(stderr, "{%c %d ofs=%zu len=%zu}\n", ptr->type, ptr->flags, ptr->ofs, ptr->len);
 }
+#endif
 
 static void
 free_delims(struct delimlist *list)
@@ -1381,11 +1445,7 @@ parse_inlines(Blob *out, const char *text, size_t size, Parser *parser)
 }
 
 
-/** block parsing **/
-
-
-static void
-parse_blocks(Blob *out, const char *text, size_t size, Parser *parser);
+/* === block type predicates === */
 
 
 /** skip up to three initial blanks */
@@ -1412,7 +1472,150 @@ is_blankline(const char *text, size_t size)
 }
 
 
-/** link definition like: [label]: link "title" */
+/** check for an atx heading prefix; return prefix length or 0 */
+static size_t
+is_atxline(const char *text, size_t size, int *plevel)
+{
+  int level;
+  size_t j = preblanks(text, size);
+  for (level = 0; j < size && text[j] == '#' && level < 7; j++, level++);
+  if (!(1 <= level && level <= 6)) return 0;
+  /* an empty heading is allowed: */
+  if (j >= size || text[j] == '\n' || text[j] == '\r') {
+    if (plevel) *plevel = level;
+    return j;
+  }
+  /* otherwise need at least one blank or tab: */
+  if (!ISBLANK(text[j])) return 0;
+  for (++j; j < size && ISBLANK(text[j]); j++);
+  if (plevel) *plevel = level;
+  return j;
+}
+
+
+/** check for a setext underlining; return line length or 0 */
+static size_t
+is_setextline(const char *text, size_t size, int *plevel)
+{
+  size_t len, j = preblanks(text, size);
+  if (plevel) *plevel = 0;
+  if (j < size && text[j] == '=') {
+    for (++j; j < size && text[j] == '='; j++);
+    len = is_blankline(text+j, size-j);
+    if (!len) return 0;
+    if (plevel) *plevel = 1;
+    return j+len;
+  }
+  if (j < size && text[j] == '-') {
+    for (++j; j < size && text[j] == '-'; j++);
+    len = is_blankline(text+j, size-j);
+    if (!len) return 0;
+    if (plevel) *plevel = 2;
+    return j+len;
+  }
+  return 0;
+}
+
+
+/** check for blockquote prefix; return prefix length or 0 */
+static size_t
+is_quoteline(const char *text, size_t size)
+{
+  size_t j = preblanks(text, size);
+  if (j >= size || text[j] != '>') return 0;
+  j += 1;
+  if (j < size && ISBLANK(text[j])) j += 1;
+  return j;
+}
+
+
+/** check for codeblock prefix; return prefix length or 0 */
+static size_t
+is_codeline(const char *text, size_t size)
+{
+  if (size > 0 && text[0] == '\t') return 1;
+  if (size > 3 && text[0] == ' ' && text[1] == ' ' &&
+                  text[2] == ' ' && text[3] == ' ') return 4;
+  return 0;
+}
+
+
+/** check for fenced code block; return #ticks or 0 */
+static size_t
+is_fenceline(const char *text, size_t size)
+{
+  size_t pre, j;
+  char delim;
+  pre = preblanks(text, size);
+  if (pre >= size) return 0;
+  j = pre;
+  delim = text[j];
+  if (delim != '`' && delim != '~') return 0;
+  for (++j; j < size && text[j] == delim; j++);
+  if (j - pre < 3) return 0;  /* need at least 3 ticks */
+  /* if started by ticks: no more ticks on this line: */
+  if (delim == '`') {
+    while (j < size && text[j] != '\n' && text[j] != '\r') {
+      if (text[j] == delim) return 0;
+      j++;
+    }
+  }
+  return j - pre;
+}
+
+
+/** check for hrule line; return length (incl newline) or 0 */
+static size_t
+is_hrule(const char *text, size_t size)
+{
+  size_t j, num = 0;
+  char c;
+
+  j = preblanks(text, size);
+  /* need at least 3 *|-|_ with optional blanks and nothing else */
+  if (j+3 >= size) return 0;  /* too short for an hrule */
+  c = text[j];
+  if (c != '*' && c != '-' && c != '_') return 0;
+  while (j < size && text[j] != '\n' && text[j] != '\r') {
+    if (text[j] == c) num += 1;
+    else if (!ISBLANK(text[j])) return 0;
+    j += 1;
+  }
+  if (num < 3) return 0;
+  if (j < size) j++;
+  if (j < size && text[j] == '\n' && text[j-1] == '\r') j++;
+  return j;
+}
+
+
+/** check for an (ordered or unordered) list item line; return prefix length */
+static size_t
+is_itemline(const char *text, size_t size, char *ptype, int *pstart)
+{
+  size_t i, j = preblanks(text, size);
+  if (ptype) *ptype = '?';
+  if (pstart) *pstart = 0;
+  if (j+1 >= size) return 0;
+  if (text[j] == '*' || text[j] == '+' || text[j] == '-') {
+    if (!ISBLANK(text[j+1])) return 0;
+    if (ptype) *ptype = text[j];
+    if (pstart) *pstart = 1;
+    return j+2;
+  }
+  if ('0' <= text[j] && text[j] <= '9') {
+    for (i=j++; '0' <= text[j] && text[j] <= '9'; j++);
+    if (j+1 >= size) return 0;
+    if (text[j] != '.' && text[j] != ')') return 0;
+    if (!ISBLANK(text[j+1])) return 0;
+    if (ptype) *ptype = text[j];
+    if (pstart) *pstart = atoi(text+i);
+    return j+2;
+  }
+  return 0;
+}
+
+
+/** check for link definition; return length or 0 */
 static size_t
 is_linkdef(const char *text, size_t size, Linkdef *pdef)
 {
@@ -1452,49 +1655,11 @@ is_linkdef(const char *text, size_t size, Linkdef *pdef)
 }
 
 
-/** check for a setext underlining; return line length or 0 */
-static size_t
-is_setextline(const char *text, size_t size, int *plevel)
-{
-  size_t len, j = preblanks(text, size);
-  if (plevel) *plevel = 0;
-  if (j < size && text[j] == '=') {
-    for (++j; j < size && text[j] == '='; j++);
-    len = is_blankline(text+j, size-j);
-    if (!len) return 0;
-    if (plevel) *plevel = 1;
-    return j+len;
-  }
-  if (j < size && text[j] == '-') {
-    for (++j; j < size && text[j] == '-'; j++);
-    len = is_blankline(text+j, size-j);
-    if (!len) return 0;
-    if (plevel) *plevel = 2;
-    return j+len;
-  }
-  return 0;
-}
+/* === block parsing === */
 
 
-/** check for an atx heading prefix; return prefix length or 0 */
-static size_t
-is_atxline(const char *text, size_t size, int *plevel)
-{
-  int level;
-  size_t j = preblanks(text, size);
-  for (level = 0; j < size && text[j] == '#' && level < 7; j++, level++);
-  if (!(1 <= level && level <= 6)) return 0;
-  /* an empty heading is allowed: */
-  if (j >= size || text[j] == '\n' || text[j] == '\r') {
-    if (plevel) *plevel = level;
-    return j;
-  }
-  /* otherwise need at least one blank or tab: */
-  if (!ISBLANK(text[j])) return 0;
-  for (++j; j < size && ISBLANK(text[j]); j++);
-  if (plevel) *plevel = level;
-  return j;
-}
+static void
+parse_blocks(Blob *out, const char *text, size_t size, Parser *parser);
 
 
 /** parse atx heading; return #chars scanned if found, else 0 */
@@ -1525,67 +1690,6 @@ parse_atxheading(Blob *out, const char *text, size_t size, Parser *parser)
     blob_put(parser, title);
   }
   return len;
-}
-
-
-/** check for codeblock prefix; return prefix length or 0 */
-static size_t
-is_codeline(const char *text, size_t size)
-{
-  if (size > 0 && text[0] == '\t') return 1;
-  if (size > 3 && text[0] == ' ' && text[1] == ' ' &&
-                  text[2] == ' ' && text[3] == ' ') return 4;
-  return 0;
-}
-
-
-static size_t
-parse_codeblock(Blob *out, const char *text, size_t size, Parser *parser)
-{
-  static const char *nolang = "";
-  size_t i, j, pre, len, mark = 0;
-  Blob *temp = blob_get(parser);
-
-  for (j = 0; j < size; ) {
-    len = is_blankline(text+j, size-j);
-    pre = is_codeline(text+j, size-j);
-    if (!pre && !len) break;  /* not indented, not blank: end code block */
-    if (len) {
-      if (mark > 0) {
-        // TODO assumes tabs have been converted to blanks:
-        for (pre=0; pre < len && pre < 4 && text[j+pre] == ' '; pre++);
-        blob_addbuf(temp, text+j+pre, len-pre);
-      }
-      j += len;
-      continue;
-    }
-    assert(pre && !len);
-    i = j += pre;
-    while (j < size && text[j] != '\n' && text[j] != '\r') j++;
-    if (j > i) blob_addbuf(temp, text+i, j-i);
-    if (j < size) j++;
-    if (j < size && text[j] == '\n' && text[j-1] == '\r') j++;
-    blob_addchar(temp, '\n');
-    mark = blob_len(temp);
-  }
-
-  blob_trunc(temp, mark);
-  if (parser->render.codeblock)
-    parser->render.codeblock(out, nolang, temp, parser->udata);
-  blob_put(parser, temp);
-  return j;
-}
-
-
-/** check for blockquote prefix; return prefix length or 0 */
-static size_t
-is_quoteline(const char *text, size_t size)
-{
-  size_t j = preblanks(text, size);
-  if (j >= size || text[j] != '>') return 0;
-  j += 1;
-  if (j < size && ISBLANK(text[j])) j += 1;
-  return j;
 }
 
 
@@ -1635,27 +1739,41 @@ parse_blockquote(Blob *out, const char *text, size_t size, Parser *parser)
 }
 
 
-/** check for fenced code block; return #ticks or 0 */
 static size_t
-is_fenceline(const char *text, size_t size)
+parse_codeblock(Blob *out, const char *text, size_t size, Parser *parser)
 {
-  size_t pre, j;
-  char delim;
-  pre = preblanks(text, size);
-  if (pre >= size) return 0;
-  j = pre;
-  delim = text[j];
-  if (delim != '`' && delim != '~') return 0;
-  for (++j; j < size && text[j] == delim; j++);
-  if (j - pre < 3) return 0;  /* need at least 3 ticks */
-  /* if started by ticks: no more ticks on this line: */
-  if (delim == '`') {
-    while (j < size && text[j] != '\n' && text[j] != '\r') {
-      if (text[j] == delim) return 0;
-      j++;
+  static const char *nolang = "";
+  size_t i, j, pre, len, mark = 0;
+  Blob *temp = blob_get(parser);
+
+  for (j = 0; j < size; ) {
+    len = is_blankline(text+j, size-j);
+    pre = is_codeline(text+j, size-j);
+    if (!pre && !len) break;  /* not indented, not blank: end code block */
+    if (len) {
+      if (mark > 0) {
+        // TODO assumes tabs have been converted to blanks:
+        for (pre=0; pre < len && pre < 4 && text[j+pre] == ' '; pre++);
+        blob_addbuf(temp, text+j+pre, len-pre);
+      }
+      j += len;
+      continue;
     }
+    assert(pre && !len);
+    i = j += pre;
+    while (j < size && text[j] != '\n' && text[j] != '\r') j++;
+    if (j > i) blob_addbuf(temp, text+i, j-i);
+    if (j < size) j++;
+    if (j < size && text[j] == '\n' && text[j-1] == '\r') j++;
+    blob_addchar(temp, '\n');
+    mark = blob_len(temp);
   }
-  return j - pre;
+
+  blob_trunc(temp, mark);
+  if (parser->render.codeblock)
+    parser->render.codeblock(out, nolang, temp, parser->udata);
+  blob_put(parser, temp);
+  return j;
 }
 
 
@@ -1730,60 +1848,11 @@ parse_fencedcode(Blob *out, const char *text, size_t size, Parser *parser)
 }
 
 
-/** check for hrule line; return length (incl newline) or 0 */
-static size_t
-is_hrule(const char *text, size_t size)
-{
-  size_t j, num = 0;
-  char c;
-
-  j = preblanks(text, size);
-  /* need at least 3 *|-|_ with optional blanks and nothing else */
-  if (j+3 >= size) return 0;  /* too short for an hrule */
-  c = text[j];
-  if (c != '*' && c != '-' && c != '_') return 0;
-  while (j < size && text[j] != '\n' && text[j] != '\r') {
-    if (text[j] == c) num += 1;
-    else if (!ISBLANK(text[j])) return 0;
-    j += 1;
-  }
-  if (num < 3) return 0;
-  if (j < size) j++;
-  if (j < size && text[j] == '\n' && text[j-1] == '\r') j++;
-  return j;
-}
-
-
 static void
 do_hrule(Blob *out, Parser *parser)
 {
   if (parser->render.hrule)
     parser->render.hrule(out, parser->udata);
-}
-
-
-/** check for an (ordered or unordered) list item line; return prefix length */
-static size_t
-is_itemline(const char *text, size_t size, char *ptype, int *pstart)
-{
-  size_t i, j = preblanks(text, size);
-  if (ptype) *ptype = '?';
-  if (j+1 >= size) return 0;
-  if (text[j] == '*' || text[j] == '+' || text[j] == '-') {
-    if (!ISBLANK(text[j+1])) return 0;
-    if (ptype) *ptype = text[j];
-    return j+2;
-  }
-  if ('0' <= text[j] && text[j] <= '9') {
-    for (i=j++; '0' <= text[j] && text[j] <= '9'; j++);
-    if (j+1 >= size) return 0;
-    if (text[j] != '.' && text[j] != ')') return 0;
-    if (!ISBLANK(text[j+1])) return 0;
-    if (ptype) *ptype = text[j];
-    if (pstart) *pstart = atoi(text+i);
-    return j+2;
-  }
-  return 0;
 }
 
 
