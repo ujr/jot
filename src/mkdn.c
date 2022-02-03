@@ -412,7 +412,7 @@ scan_cdata(const char *text, size_t size)
 
 /** return length of HTML tag at text or 0 if malformed */
 static size_t
-scan_tag(const char *text, size_t size)
+scan_tag(const char *text, size_t size, bool oneline)
 {
   size_t len;
   int closing = 0, quote, c;
@@ -432,7 +432,8 @@ scan_tag(const char *text, size_t size)
   else if (text[1] == '!') { ++len; }  /* treat decls as regular tags */
   if (!ISALPHA(text[len])) return 0;
   while (len < size && (ISALNUM(text[len]) || text[len] == '-')) len++;
-  len += scan_innerspace(text+len, size-len);
+  if (oneline) while (len < size && ISBLANK(text[len])) len++;
+  else len += scan_innerspace(text+len, size-len);
   if (len >= size) return 0;
   if (text[len] == '>') return len+1;
   if (closing) return 0; /* closing tag cannot have attrs */
@@ -446,6 +447,7 @@ scan_tag(const char *text, size_t size)
   while (len < size && (c=text[len]) != 0 && (c != '>' || quote)) {
     if (c == quote) quote = 0;
     else if (!quote && (c == '"' || c == '\'')) quote = c;
+    else if ((c == '\n' || c == '\r') && oneline) return 0;
     len++;
   }
   if (len >= size || text[len] != '>') return 0;
@@ -1410,7 +1412,7 @@ parse_inlines(Blob *out, const char *text, size_t size, Parser *parser)
         delim_push(&delims, j, len, type, 0);
         j += len;
       }
-      else if ((len = scan_tag(text+j, size-j))) {
+      else if ((len = scan_tag(text+j, size-j, 0))) {
         delim_push(&delims, j, len, '<', 0);
         j += len;
       }
@@ -1702,18 +1704,13 @@ parse_blockquote(Blob *out, const char *text, size_t size, Parser *parser)
   for (j = 0; j < size; ) {
     len = is_quoteline(text+j, size-j);
     if (len) { j += len; }
-    else {
+    else { /* either lazy continuation or past quote */
       len = is_blankline(text+j, size-j);
-#if 0  /* this is original Markdown, but not CommonMark */
-      if (len && (j+len >= size ||
-                  (!is_quoteline(text+j+len, size-j-len) &&
-                   !is_blankline(text+j+len, size-j-len))))
-        break;  /* empty line followed by non-quote line ends quote */
-#else
       if (len) break;  /* blank line always interrupts blockquote */
-#endif
-      if (!len && (is_hrule(text+j, size-j) ||
-                   is_itemline(text+j, size-j, 0, 0)))
+      if (//is_codeline(text+j, size-j) ||
+          //is_setextline(text+j, size-j, 0) ||
+          is_hrule(text+j, size-j) ||
+          is_itemline(text+j, size-j, 0, 0))
         break;  /* rules and items interrupt the blockquote */
     }
     i = j;
@@ -1870,6 +1867,7 @@ parse_listitem(Blob *out, char type, bool *ploose, const char *text, size_t size
   /* scan item prefix, remember indent: */
   pre = is_itemline(text, size, &itemtype, &start);
   if (!pre || itemtype != type) return 0;  /* list ends */
+  if (is_hrule(text, size)) return 0;  /* lines like "- - -" are hrules */
 
   j = pre;
   wasblank = false;
@@ -1985,6 +1983,7 @@ is_htmlline(const char *text, size_t size, int *pkind, Parser *parser)
   //    string "/>" ........................... until a blank line
   // 7. a complete open tag (but not one from case 1), until blank line
   */
+  static const bool oneline = true;
   const struct tagname *name;
   size_t len, i, j = preblanks(text, size);
   bool isclose;
@@ -2022,8 +2021,8 @@ is_htmlline(const char *text, size_t size, int *pkind, Parser *parser)
     bool istext = name == parser->pretag || name == parser->scripttag ||
                   name == parser->styletag || name == parser->textareatag;
     j += name->len;
-    if (!isclose && istext && j < size && (text[j] == '>' || ISSPACE(text[j]))) {
-      if (pkind) *pkind = 1;
+    if (istext && j < size && (text[j] == '>' || ISSPACE(text[j]))) {
+      if (pkind) *pkind = isclose ? 7 : 1;
       return j+1;
     }
     else if (j < size && (text[j] == '>' || ISSPACE(text[j]) ||
@@ -2033,7 +2032,7 @@ is_htmlline(const char *text, size_t size, int *pkind, Parser *parser)
     }
     return 0;
   }
-  if ((len = scan_tag(text+i, size-i)) &&
+  if ((len = scan_tag(text+i, size-i, oneline)) &&
       is_blankline(text+i+len, size-i-len)) {
     if (pkind) *pkind = 7;
     return i + len;
@@ -2129,6 +2128,7 @@ parse_paragraph(Blob *out, const char *text, size_t size, Parser *parser)
   if (level > 0 && blob_len(temp) > 0) {
     if (parser->render.heading) {
       Blob *title = blob_get(parser);
+      blob_trimend(temp);
       parse_inlines(title, blob_str(temp), blob_len(temp), parser);
       parser->render.heading(out, level, title, parser->udata);
       blob_put(parser, title);

@@ -145,11 +145,13 @@ assert(not jot.exists(dir))
 
 log.info("Checking Markdown rendering");
 mkdnskip = {
-  [618]="be laxer on html",
-  [620]="be laxer on html",
-  [621]="be laxer on html",
-  [625]="be laxer on html comment; CM is XML strict",
-  [626]="be laxer on html comment; CM is XML strict",
+  [204]="leave precedence of duplicate link defs undefined",
+  [206]="will not case-fold non-ASCII",
+  [618]="be laxer on html tag syntax",
+  [620]="be laxer on html tag syntax",
+  [621]="be laxer on html tag syntax",
+  [625]="be laxer on html comments; CM is XML strict",
+  [626]="be laxer on html comments; CM is XML strict",
   [999]="reason"
 }
 numfail = 0
