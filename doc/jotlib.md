@@ -12,6 +12,25 @@ local path = jot.path
 local log = jot.log
 ```
 
+## Transformation
+
+```Lua
+markdown(str, opts)  -- render Markdown in str to HTML
+pikchr(str, opts)    -- render Pikchr in str to SVG
+```
+
+The **Markdown** renderer aims to be largely but not entirely
+conformant to [CommonMark](https://spec.commonmark.org). If new to
+Markdown, read a [Markdown tutorial](https://commonmark.org/help).
+Options: TODO
+
+**Pikchr** is a new implementation of Kernighan's PIC language
+by the SQLite author D. Richard Hipp. To include Pikchr in
+Markdown, use a fenced code block with an info string that
+reads `pikchr`. About the pikchr language, consult the
+[pikchr.org](https://pikchr.org) web page.
+Options: TODO
+
 ## Logging
 
 Log a message (a string) at one of the given log levels.

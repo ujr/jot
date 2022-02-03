@@ -10,6 +10,8 @@ one more does no harm.
     jot new <path>        create initial site structure
     jot build [path]      build or rebuild site in path (or .)
     jot render [file]     render file (or stdin) to stdout
+    jot pikchr [file]     run pikchr on file (or stdin)
+    jot checks            run self checks (built-in unit tests)
     jot help              show available commands and options
 
 ## Features
