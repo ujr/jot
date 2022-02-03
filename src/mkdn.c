@@ -1116,6 +1116,7 @@ struct delimlist {
 #define DELIM_ACTIVE  1  /* to prevent links within links */
 #define DELIM_OPENER  2
 #define DELIM_CLOSER  4
+#define DELIM_SHIFT   3  /* bits past 1st three are available */
 
 #define DELIM_ISACTIVE(item) ((item)->flags & DELIM_ACTIVE)
 #define DELIM_CANOPEN(item)  ((item)->flags & DELIM_OPENER)
@@ -1333,7 +1334,7 @@ parse_inlines(Blob *out, const char *text, size_t size, Parser *parser)
     else if (text[j] == '`') {
       struct slice codeslice;
       len = scan_codespan(text+j, size-j, &codeslice);
-      if (len) { int flags = (len-codeslice.n)/2; // TODO HACK
+      if (len) { int flags = ((len-codeslice.n)/2) << DELIM_SHIFT; // TODO HACK
         delim_push(&delims, j, len, '`', flags);
         j += len;
       }
@@ -1362,8 +1363,12 @@ parse_inlines(Blob *out, const char *text, size_t size, Parser *parser)
 
   /* now codespans, autolinks, rawhtml may still remain: */
   for (ptr = delims.head; ptr; ptr = ptr->next) {
-    if (ptr->type == '`' || ptr->type == ':' || ptr->type == '@' || ptr->type == '<') {
+    if (ptr->type == ':' || ptr->type == '@' || ptr->type == '<') {
       addspan(&tree, ptr->type, ptr->flags, ptr->ofs, ptr->len);
+    }
+    else if (ptr->type == '`') {
+      size_t dlen = ptr->flags >> DELIM_SHIFT;
+      addspan(&tree, ptr->type, dlen, ptr->ofs, ptr->len);
     }
   }
 
@@ -1595,10 +1600,17 @@ parse_blockquote(Blob *out, const char *text, size_t size, Parser *parser)
     if (len) { j += len; }
     else {
       len = is_blankline(text+j, size-j);
+#if 0  /* this is original Markdown, but not CommonMark */
       if (len && (j+len >= size ||
                   (!is_quoteline(text+j+len, size-j-len) &&
                    !is_blankline(text+j+len, size-j-len))))
         break;  /* empty line followed by non-quote line ends quote */
+#else
+      if (len) break;  /* blank line always interrupts blockquote */
+#endif
+      if (!len && (is_hrule(text+j, size-j) ||
+                   is_itemline(text+j, size-j, 0, 0)))
+        break;  /* rules and items interrupt the blockquote */
     }
     i = j;
     while (j < size && text[j] != '\n' && text[j] != '\n') j++;
@@ -1812,7 +1824,7 @@ parse_listitem(Blob *out, char type, bool *ploose, const char *text, size_t size
     /* find indent (up to pre): */
     for (i = 0; i < pre && text[j+i] == ' '; i++);
     /* item ends on next (non-sub) item or less indented material: */
-    if (is_itemline(text+j+i, size-j-i, 0, 0) && !is_hrule(text+j+i, size-j-i)) {
+    if (is_itemline(text+j+i, size-j-i, 0, 0) || is_hrule(text+j+i, size-j-i)) {
       if (wasblank) *ploose = true;
       if (i < pre) break;  /* next item ends current item */
       if (!sublist) sublist = blob_len(temp);  /* sublist start offset */
@@ -2020,8 +2032,9 @@ parse_paragraph(Blob *out, const char *text, size_t size, Parser *parser)
 {
   Blob *temp = blob_get(parser);
   const char *s;
+  char type;
   size_t j, k, len, n;
-  int level, kind;
+  int level, kind, start;
 
   for (j = n = 0, level = 0; j < size; j += len) {
     len = scan_line(text+j, size-j);
@@ -2031,7 +2044,8 @@ parse_paragraph(Blob *out, const char *text, size_t size, Parser *parser)
     if (j > 0 && (n=is_setextline(text+j, len, &level))) break;  /* not 1st line */
     if (is_hrule(text+j, len)) break;
     if (is_fenceline(text+j, len)) break;
-    if (is_itemline(text+j, len, 0, 0)) break;
+    if (is_itemline(text+j, len, &type, &start) && start == 1) break;
+    if (is_quoteline(text+j, len)) break;
     if (is_htmlline(text+j, len, &kind, parser) && kind != 7) break;
     for (k = 0; k < len && ISBLANK(text[j+k]); k++);
     blob_addbuf(temp, text+j+k, len-k);
