@@ -951,14 +951,14 @@ freespans(SpanTree *tree, Parser *parser)
   blob_put(parser, tree->blob);
 }
 
-static bool // TODO macro
+static bool
 span_contains(struct span *spans, size_t i, size_t j)
 {
   size_t test = spans[j].ofs;
   return i && spans[i].ofs <= test && test < spans[i].ofs+spans[i].len;
 }
 
-static bool // TODO macro
+static bool
 span_before(struct span *spans, size_t i, size_t j)
 {
   return i && spans[i].ofs + spans[i].len <= spans[j].ofs;
@@ -1042,6 +1042,7 @@ addspan(SpanTree *tree, char type, size_t m, size_t ofs, size_t len)
 static void
 emit_spans(Blob *out, const char *text, SpanTree *tree, size_t span, Parser *parser);
 
+
 static void
 get_link_parts(SpanTree *tree, size_t span,
   size_t *pbody, struct slice *plink, struct slice *ptitle)
@@ -1064,6 +1065,7 @@ get_link_parts(SpanTree *tree, size_t span,
 
   assert(spans[title].next == 0);
 }
+
 
 static void
 emit_span(Blob *out, const char *text, SpanTree *tree, size_t span, Parser *parser)
@@ -1122,6 +1124,7 @@ emit_span(Blob *out, const char *text, SpanTree *tree, size_t span, Parser *pars
     emit_text(out, text+spans[span].ofs, spans[span].len, parser);
 }
 
+
 static void
 emit_spans(Blob *out, const char *text, SpanTree *tree, size_t span, Parser *parser)
 {
@@ -1140,6 +1143,7 @@ emit_spans(Blob *out, const char *text, SpanTree *tree, size_t span, Parser *par
     emit_text(out, text+ofs, end-ofs, parser);
   }
 }
+
 
 /* CM 6.2 defines "left flanking" (can begin) and "right flanking"
 // (can end emphasis) delimiter runs based on what's before and after.
@@ -1189,12 +1193,16 @@ struct delimlist {
 #define DELIM_FLAGS(b,c,a) \
   (delim_canopen(b,c,a) + delim_canclose(b,c,a) + DELIM_ACTIVE)
 
+/* define word characters to be ALNUM and all non-ASCII chars:
+   a rough approximation, but works reasonably well with UTF-8: */
+#define ISWORD(c) (ISALNUM(c) || !ISASCII(c))
+
 static int
 delim_canopen(int before, int delim, int after)
 {
   if (ISSPACE(after)) return 0;
-  if (ISALNUM(after)) return delim == '_' && ISALNUM(before) ? 0 : DELIM_OPENER;
-  if (ISALNUM(before)) return 0;
+  if (ISWORD(after)) return delim == '_' && ISWORD(before) ? 0 : DELIM_OPENER;
+  if (ISWORD(before)) return 0;
   return DELIM_OPENER;
 }
 
@@ -1202,8 +1210,8 @@ static int
 delim_canclose(int before, int delim, int after)
 {
   if (ISSPACE(before)) return 0;
-  if (ISALNUM(before)) return delim == '_' && ISALNUM(after) ? 0 : DELIM_CLOSER;
-  if (ISALNUM(after)) return 0;
+  if (ISWORD(before)) return delim == '_' && ISWORD(after) ? 0 : DELIM_CLOSER;
+  if (ISWORD(after)) return 0;
   return DELIM_CLOSER;
 }
 
@@ -1568,7 +1576,7 @@ is_fenceline(const char *text, size_t size)
 
 /** check for hrule line; return length (incl newline) or 0 */
 static size_t
-is_hrule(const char *text, size_t size)
+is_ruleline(const char *text, size_t size)
 {
   size_t j, num = 0;
   char c;
@@ -1594,26 +1602,43 @@ is_hrule(const char *text, size_t size)
 static size_t
 is_itemline(const char *text, size_t size, char *ptype, int *pstart)
 {
-  size_t i, j = preblanks(text, size);
+  size_t i, j;
   if (ptype) *ptype = '?';
   if (pstart) *pstart = 0;
-  if (j+1 >= size) return 0;
+  j = preblanks(text, size);
+  if (j >= size) return 0;
+  /* list marker (bullet or ordered) and 1 to 4 blanks
+     (if more then 4 blanks: indented code in item); or
+     list marker (bullet or ordered) and blank line */
   if (text[j] == '*' || text[j] == '+' || text[j] == '-') {
-    if (!ISBLANK(text[j+1])) return 0;
     if (ptype) *ptype = text[j];
     if (pstart) *pstart = 1;
-    return j+2;
+    j += 1;
+    goto post;
   }
   if ('0' <= text[j] && text[j] <= '9') {
     for (i=j++; '0' <= text[j] && text[j] <= '9'; j++);
+    if (j-i > 9) return 0;  /* too many digits by CM */
     if (j+1 >= size) return 0;
     if (text[j] != '.' && text[j] != ')') return 0;
-    if (!ISBLANK(text[j+1])) return 0;
     if (ptype) *ptype = text[j];
     if (pstart) *pstart = atoi(text+i);
-    return j+2;
+    j += 1;
+    goto post;
   }
   return 0;
+post:
+  /* now expect 1 to 4 blanks (if more than 4: pretend it's
+     just one as we have indented code in list item) -or-
+     a blank line, in which case pre is defined to be 2 */
+  if (j >= size || text[j] == '\n' || text[j] == '\r' || text[j] == '\t') return j;
+  if (text[j] != ' ') return 0;
+  if (++j < size && text[j] == ' ')
+    if (++j < size && text[j] == ' ')
+      if (++j < size && text[j] == ' ')
+        if (++j < size && text[j] == ' ')
+          j -= 3;  /* indented code */
+  return j;
 }
 
 
@@ -1660,8 +1685,15 @@ is_linkdef(const char *text, size_t size, Linkdef *pdef)
 /* === block parsing === */
 
 
+typedef struct {
+  bool unwrapped;
+  bool is_block_first;
+  bool is_block_last;
+} BlockInfo;
+
+
 static void
-parse_blocks(Blob *out, const char *text, size_t size, Parser *parser);
+parse_blocks(Blob *out, const char *text, size_t size, Parser *parser, BlockInfo *pinfo);
 
 
 /** parse atx heading; return #chars scanned if found, else 0 */
@@ -1700,20 +1732,20 @@ parse_blockquote(Blob *out, const char *text, size_t size, Parser *parser)
 {
   size_t i, j, len;
   Blob *temp = blob_get(parser);
+  bool wasblank = false;
 
   for (j = 0; j < size; ) {
     len = is_quoteline(text+j, size-j);
     if (len) { j += len; }
-    else { /* either lazy continuation or past quote */
-      len = is_blankline(text+j, size-j);
-      if (len) break;  /* blank line always interrupts blockquote */
-      if (//is_codeline(text+j, size-j) ||
-          //is_setextline(text+j, size-j, 0) ||
-          is_hrule(text+j, size-j) ||
-          is_itemline(text+j, size-j, 0, 0))
-        break;  /* rules and items interrupt the blockquote */
-    }
+    else if (wasblank ||  /* blank line ends quote, even if quoted */
+      is_blankline(text+j, size-j) ||
+      is_fenceline(text+j, size-j) ||
+      is_codeline(text+j, size-j) ||
+      is_ruleline(text+j, size-j) ||
+      is_itemline(text+j, size-j, 0, 0)) break;
+    /* else: lazy continuation */
     i = j;
+    wasblank = is_blankline(text+i, size-i) > 0;
     while (j < size && text[j] != '\n' && text[j] != '\n') j++;
     if (j > i) blob_addbuf(temp, text+i, j-i);
     if (j < size) j++;
@@ -1724,7 +1756,7 @@ parse_blockquote(Blob *out, const char *text, size_t size, Parser *parser)
   if (too_deep(parser)) { /* do not parse, just render as text */ }
   else {
     Blob *inner = blob_get(parser);
-    parse_blocks(inner, blob_str(temp), blob_len(temp), parser);
+    parse_blocks(inner, blob_str(temp), blob_len(temp), parser, 0);
     blob_put(parser, temp);
     temp = inner;
   }
@@ -1857,89 +1889,84 @@ static size_t
 parse_listitem(Blob *out, char type, bool *ploose, const char *text, size_t size, Parser *parser)
 {
   Blob *temp;
-  size_t pre, i, j, len, sublist;
-  int start;
+  size_t pre, i, j, len, sub;
+  int start, wasblank;
   char itemtype;
-  bool wasblank;
+  bool firstblank, nested;
 
   assert(ploose != 0);
 
   /* scan item prefix, remember indent: */
   pre = is_itemline(text, size, &itemtype, &start);
   if (!pre || itemtype != type) return 0;  /* list ends */
-  if (is_hrule(text, size)) return 0;  /* lines like "- - -" are hrules */
+  if (is_ruleline(text, size)) return 0;  /* lines like "- - -" are hrules */
 
   j = pre;
-  wasblank = false;
-  sublist = 0;
+  sub = 0;
+  nested = false;
+  firstblank = false;
+  wasblank = 0;
   temp = blob_get(parser);
 
-  /* scan remainder of first line: */
-  for (i=j; j < size && text[j] != '\n' && text[j] != '\r'; j++);
-  blob_addbuf(temp, text+i, j-i);
-  blob_addchar(temp, '\n');
-  if (j < size) j++;
-  if (j < size && text[j] == '\n' && text[j-1] == '\r') j++;
-
-  /* scan remaining lines, if any: */
-  while (j < size) {
-    if ((len = is_blankline(text+j, size-j))) {
-      wasblank = true;
-      j += len;
-      continue;
-    }
-    /* find indent (up to pre): */
-    for (i = 0; i < pre && text[j+i] == ' '; i++);
-    /* item ends on next (non-sub) item or less indented material: */
-    if (is_itemline(text+j+i, size-j-i, 0, 0) || is_hrule(text+j+i, size-j-i)) {
-      if (wasblank) *ploose = true;
-      if (i < pre) break;  /* next item ends current item */
-      if (!sublist) sublist = blob_len(temp);  /* sublist start offset */
-    }
-    else if (wasblank) {
-      if (i < pre) {
-        // TODO flag list done to caller!?
-        break;
-      }
-      else {
-        blob_addchar(temp, '\n');
-        *ploose = true;
-      }
-    }
-
-    for (j+=i, i=j; j < size && text[j] != '\n' && text[j] != '\r'; j++);
+  /* scan remainder of first line; special case if this line is blank: */
+  len = 0;
+  if (j >= size || (len = is_blankline(text+j, size-j))) {
+    firstblank = true;
+    pre = 2;
+    j += len;
+  }
+  else {
+    for (i=j; j < size && text[j] != '\n' && text[j] != '\r'; j++);
     blob_addbuf(temp, text+i, j-i);
     blob_addchar(temp, '\n');
     if (j < size) j++;
     if (j < size && text[j] == '\n' && text[j-1] == '\r') j++;
-    wasblank = false;
   }
 
-  /* item is now in temp blob, including subitems, if any, */
-  /* render it into the inner buffer: */
+  /* scan remaining lines, if any: */
+  while (j < size) {
+    if ((len = is_blankline(text+j, size-j))) {
+      j += len;
+      if (firstblank) { *ploose = true; break; }
+      wasblank += 1;
+      continue;
+    }
+    /* find indent (up to pre): */
+    for (i = 0; i < pre && j+i < size && text[j+i] == ' '; i++);
+    if (i < pre && is_ruleline(text+j, size-j)) break;
+    if (i < 4 && (sub = is_itemline(text+j+i, size-j-i, 0, 0))) {
+      if (i >= pre) nested = true;
+      if (wasblank && !nested) *ploose = true;
+      if (i < pre) break;  /* next (non-sub-) item ends current item */
+    }
+    if (wasblank) {
+      if (i < pre) break;  /* less indented after blank line ends item */
+      if (!nested) *ploose = true;
+      if (i == pre) nested = false;
+    }
+    for (; wasblank > 0; wasblank--)
+      blob_addchar(temp, '\n');
+
+    /* append stuff after indent */
+    j += MIN(i, pre);
+    for (i = j; j < size && text[j] != '\n' && text[j] != '\r'; j++);
+    blob_addbuf(temp, text+i, j-i);
+    blob_addchar(temp, '\n');
+    if (j < size) j++;
+    if (j < size && text[j-1] == '\r' && text[j] == '\n') j++;
+  }
+
+  /* item is now in temp blob; process blocks and inlines: */
+  BlockInfo info;
+  info.unwrapped = !*ploose;
   Blob *inner = blob_get(parser);
-  if (!*ploose || too_deep(parser)) {
-    if (sublist && sublist < blob_len(temp)) {
-      parse_inlines(inner, blob_str(temp), sublist, parser);
-      parse_blocks(inner, blob_str(temp)+sublist, blob_len(temp)-sublist, parser);
-    }
-    else {
-      parse_inlines(inner, blob_str(temp), blob_len(temp), parser);
-    }
-  }
-  else {
-    if (sublist && sublist < blob_len(temp)) {
-      /* Want two blocks: the stuff before, and then the sublist */
-      parse_blocks(inner, blob_str(temp), sublist, parser);
-      parse_blocks(inner, blob_str(temp)+sublist, blob_len(temp)-sublist, parser);
-    }
-    else {
-      parse_blocks(inner, blob_str(temp), blob_len(temp), parser);
-    }
-  }
+  parse_blocks(inner, blob_str(temp), blob_len(temp), parser, &info);
 
-  if (parser->render.listitem)
-    parser->render.listitem(out, *ploose, inner, parser->udata);
+  if (parser->render.listitem) {
+    int tightstart = !info.is_block_first;
+    int tightend = !info.is_block_last;
+    parser->render.listitem(out, tightstart, tightend, inner, parser->udata);
+  }
 
   blob_put(parser, inner);
   blob_put(parser, temp);
@@ -2075,11 +2102,11 @@ parse_htmlblock(Blob *out, const char *text, size_t size, size_t startlen, int k
         (kind == 5 && p >= text+11 && p[-2] == ']' && p[-1] == ']')) {
       break;  /* end condition found */
     }
-    else if (kind == 1) { // TODO ignore case!
-      if (p >= text+10 && !memcmp("</pre", p-5, 5)) break;
-      if (p >= text+16 && !memcmp("</script", p-8, 8)) break;
-      if (p >= text+14 && !memcmp("</style", p-7, 7)) break;
-      if (p <= text+20 && !memcmp("</textarea", p-10, 10)) break;
+    else if (kind == 1) {
+      if (p >= text+10 && !strnicmp("</pre", p-5, 5)) break;
+      if (p >= text+16 && !strnicmp("</script", p-8, 8)) break;
+      if (p >= text+14 && !strnicmp("</style", p-7, 7)) break;
+      if (p <= text+20 && !strnicmp("</textarea", p-10, 10)) break;
     }
   }
 
@@ -2096,13 +2123,13 @@ parse_htmlblock(Blob *out, const char *text, size_t size, size_t startlen, int k
 
 
 static size_t
-parse_paragraph(Blob *out, const char *text, size_t size, Parser *parser)
+parse_paragraph(Blob *out, const char *text, size_t size, Parser *parser, bool *punwrapped)
 {
   Blob *temp = blob_get(parser);
   const char *s;
-  char type;
   size_t j, k, len, n;
   int level, kind, start;
+  bool unwrapped = punwrapped && *punwrapped;
 
   for (j = n = 0, level = 0; j < size; j += len) {
     len = scan_line(text+j, size-j);
@@ -2110,9 +2137,10 @@ parse_paragraph(Blob *out, const char *text, size_t size, Parser *parser)
     if (is_blankline(text+j, len)) break;
     if (is_atxline(text+j, len, 0)) break;
     if (j > 0 && (n=is_setextline(text+j, len, &level))) break;  /* not 1st line */
-    if (is_hrule(text+j, len)) break;
+    if (is_ruleline(text+j, len)) break;
     if (is_fenceline(text+j, len)) break;
-    if (is_itemline(text+j, len, &type, &start) && start == 1) break;
+    if ((n = is_itemline(text+j, len, 0, &start)) && start == 1 &&
+        !is_blankline(text+j+n, len-n)) break;
     if (is_quoteline(text+j, len)) break;
     if (is_htmlline(text+j, len, &kind, parser) && kind != 7) break;
     for (k = 0; k < len && ISBLANK(text[j+k]); k++);
@@ -2132,14 +2160,20 @@ parse_paragraph(Blob *out, const char *text, size_t size, Parser *parser)
       parse_inlines(title, blob_str(temp), blob_len(temp), parser);
       parser->render.heading(out, level, title, parser->udata);
       blob_put(parser, title);
+      if (punwrapped) *punwrapped = false;
     }
     j += n;  /* consume the setext underlining */
   }
-  else if (j > 0 && parser->render.paragraph) {
-    Blob *para = blob_get(parser);
-    parse_inlines(para, blob_str(temp), blob_len(temp), parser);
-    parser->render.paragraph(out, para, parser->udata);
-    blob_put(parser, para);
+  else if (j > 0) {
+    if (!unwrapped && parser->render.paragraph) {
+      Blob *para = blob_get(parser);
+      parse_inlines(para, blob_str(temp), blob_len(temp), parser);
+      parser->render.paragraph(out, para, parser->udata);
+      blob_put(parser, para);
+    }
+    else {
+      parse_inlines(out, blob_str(temp), blob_len(temp), parser);
+    }
   }
 
   blob_put(parser, temp);
@@ -2148,17 +2182,20 @@ parse_paragraph(Blob *out, const char *text, size_t size, Parser *parser)
 
 
 static void
-parse_blocks(Blob *out, const char *text, size_t size, Parser *parser)
+parse_blocks(Blob *out, const char *text, size_t size, Parser *parser, BlockInfo *pinfo)
 {
   size_t start;
   char itemtype;
   int itemstart;
   int htmlkind;
+  bool unwrapped = pinfo && pinfo->unwrapped;
+  bool block1 = 0, blockN = 0;
 
   parser->nesting_depth++;
   for (start=0; start<size; ) {
     const char *ptr = text+start;
     size_t len, end = size-start;
+    bool isblock = true;
 
     if ((len = parse_atxheading(out, ptr, end, parser))) {
       /* nothing else to do */
@@ -2169,7 +2206,7 @@ parse_blocks(Blob *out, const char *text, size_t size, Parser *parser)
     else if (is_quoteline(ptr, end)) {
       len = parse_blockquote(out, ptr, end, parser);
     }
-    else if ((len = is_hrule(ptr, end))) {
+    else if ((len = is_ruleline(ptr, end))) {
       do_hrule(out, parser);
     }
     else if (is_fenceline(ptr, end)) {
@@ -2184,20 +2221,31 @@ parse_blocks(Blob *out, const char *text, size_t size, Parser *parser)
     // TODO table lines
     else if ((len = is_linkdef(ptr, end, 0))) {
       /* nothing to do, just skip it */
+      isblock = false;
     }
     else if ((len = is_blankline(ptr, end))) {
       /* nothing to do, blank lines separate blocks */
+      isblock = false;
     }
     else {
       /* Non-blank lines that cannot be interpreted otherwise
          form a paragraph in Markdown/CommonMark: */
-      len = parse_paragraph(out, ptr, end, parser);
+      len = parse_paragraph(out, ptr, end, parser, &unwrapped);
+      isblock = !unwrapped;
     }
+
+    if (start == 0) block1 = isblock;
+    blockN = isblock;
 
     if (len) start += len;
     else break;
   }
   parser->nesting_depth--;
+
+  if (pinfo) {
+    pinfo->is_block_first = block1;
+    pinfo->is_block_last = blockN;
+  }
 }
 
 
@@ -2282,7 +2330,7 @@ markdown(Blob *out, const char *text, size_t size, struct markdown *mkdn, int de
 
   /* 2nd pass: do the rendering */
   if (mkdn->prolog) mkdn->prolog(out, mkdn->udata);
-  parse_blocks(out, text, size, &parser);
+  parse_blocks(out, text, size, &parser, false);
   if (mkdn->epilog) mkdn->epilog(out, mkdn->udata);
 
   /* release memory */

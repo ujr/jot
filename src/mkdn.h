@@ -20,7 +20,7 @@ struct markdown {
   void (*codeblock)(Blob *out, const char *lang, Blob *text, void *udata);
   void (*blockquote)(Blob *out, Blob *text, void *udata);
   void (*list)(Blob *out, char type, int start, Blob *text, void *udata);
-  void (*listitem)(Blob *out, int loose, Blob *text, void *udata);
+  void (*listitem)(Blob *out, int tightstart, int tightend, Blob *text, void *udata);
   void (*hrule)(Blob *out, void *udata);
   void (*htmlblock)(Blob *out, Blob *text, void *udata);
   // TOOD table/row/cell

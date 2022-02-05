@@ -2251,7 +2251,9 @@ Test{
 - foo
 ]==],
   result = [==[<ul>
-<li><div></li>
+<li>
+<div>
+</li>
 <li>foo</li>
 </ul>
 ]==]

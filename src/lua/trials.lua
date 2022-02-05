@@ -56,3 +56,16 @@ print("TYPE", "BYTES", "MODIFIED", "PATH")
 for path, type, size, mtime in jot.walkdir(".", 0) do
   print(type, size, mtime, path)
 end
+
+mkdn = [[# Title
+Paragraph text
+on two lines.
+- item
+- item
+  1. first
+  2. second
+- back to outer list
+with *lazy* continuation
+---
+Paragraph text again]]
+print(jot.markdown(mkdn))

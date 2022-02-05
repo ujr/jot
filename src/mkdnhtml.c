@@ -207,6 +207,7 @@ static void
 html_blockquote(Blob *out, Blob *text, void *udata)
 {
   UNUSED(udata);
+  blob_endline(out);
   BLOB_ADDLIT(out, "<blockquote>\n");
   blob_add(out, text);
   BLOB_ADDLIT(out, "</blockquote>\n");
@@ -269,13 +270,13 @@ html_codeblock(Blob *out, const char *lang, Blob *text, void *udata)
 
 
 static void
-html_listitem(Blob *out, int loose, Blob *text, void *udata)
+html_listitem(Blob *out, int tightstart, int tightend, Blob *text, void *udata)
 {
   UNUSED(udata);
   BLOB_ADDLIT(out, "<li>");
-  if (loose) blob_addchar(out, '\n');
+  if (!tightstart) blob_addchar(out, '\n');
   blob_add(out, text);
-  if (!loose) blob_trimend(out);
+  if (tightend) blob_trimend(out);
   BLOB_ADDLIT(out, "</li>\n");
 }
 
@@ -284,13 +285,14 @@ static void
 html_list(Blob *out, char type, int start, Blob *text, void *udata)
 {
   UNUSED(udata);
+  blob_endline(out);  /* make list start on a new line */
   if (type == '.' || type == ')') {
-    if (start <= 1) BLOB_ADDLIT(out, "<ol>\n");
+    if (start == 1 || start < 0) BLOB_ADDLIT(out, "<ol>\n");
     else blob_addfmt(out, "<ol start=\"%d\">\n", start);
     blob_add(out, text);
     BLOB_ADDLIT(out, "</ol>\n");
   }
-  else { /* type is '-' or '*' or '+' (but don't check here) */
+  else {  /* type is '-' or '*' or '+' (but don't check here) */
     BLOB_ADDLIT(out, "<ul>\n");
     blob_add(out, text);
     BLOB_ADDLIT(out, "</ul>\n");
