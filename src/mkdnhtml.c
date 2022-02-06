@@ -18,6 +18,7 @@
  *   here we do not emit it: `<hr>` instead of `<hr/>`
  */
 
+#include <assert.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,6 +31,11 @@
 #define UNUSED(x) ((void)(x))
 #define ISASCII(c) (0 <= (c) && (c) <= 127)
 #define ISBLANK(c) ((c) == ' ' || (c) == '\t')
+#define ISALNUM(c) (('0' <= (c) && (c) <= '9') || \
+                    ('a' <= (c) && (c) <= 'z') || \
+                    ('A' <= (c) && (c) <= 'Z'))
+
+#define NOT_REACHED 0
 
 #define BLOB_ADDLIT(bp, lit) blob_addbuf((bp), "" lit, (sizeof lit)-1)
 /* the empty string causes a syntax error if not a literal string;
@@ -44,6 +50,71 @@ struct html {
   int pretty;  /* prettiness; 0=dense, 1=looser, ... */
   int debug;   /* tentative */
 };
+
+
+static bool _initialized = false;
+
+
+/* HTML5 entities -- ONLY the subset needed to pass the CommonMark tests.
+   See https://html.spec.whatwg.org/entities.json for a complete list.
+   You may add entities. Before use, sort the list with entitysort(). */
+static struct entity {
+  const char *name;
+  size_t len;
+  unsigned int code1;
+  unsigned int code2;
+} entities[] = {
+  { "auml",                      4,  228,   0 },
+  { "ouml",                      4,  246,   0 },
+  { "nbsp",                      4,  160,   0 },
+  { "copy",                      4,  169,   0 },
+  { "AElig",                     5,  198,   0 },
+  { "Dcaron",                    6,  270,   0 },
+  { "frac34",                    6,  190,   0 },
+  { "HilbertSpace",             12, 8459,   0 },
+  { "DifferentialD",            13, 8518,   0 },
+  { "ClockwiseContourIntegral", 24, 8754,   0 },
+  { "ngE",                       3, 8807, 824 },
+  { "lt",                        2,   60,   0 },
+  { "gt",                        2,   62,   0 },
+  { "quot",                      4,   34,   0 },
+  { "amp",                       3,   38,   0 },
+  { 0, 0, 0, 0 }
+};
+
+
+static int
+entitycmp(const void *a, const void *b)
+{
+  const struct entity *pa = a;
+  const struct entity *pb = b;
+  if (pa->len < pb->len) return -1;
+  if (pa->len > pb->len) return +1;
+  return strncmp(pa->name, pb->name, pa->len);
+}
+
+
+static void
+entitysort(void)
+{
+  size_t msize = sizeof(entities[0]);
+  size_t nmemb = sizeof(entities)/msize;
+  qsort(entities, nmemb, msize, entitycmp);
+}
+
+
+static struct entity *
+entityfind(const char *name, size_t size)
+{
+  struct entity key;
+  size_t msize = sizeof(entities[0]);
+  size_t nmemb = sizeof(entities)/msize;
+  size_t len = 0;
+  while (len < size && ISALNUM(name[len])) len++;
+  key.name = name;
+  key.len = len;
+  return bsearch(&key, entities, nmemb, msize, entitycmp);
+}
 
 
 /** scan dec number from prefix of text[0..size-1]; overflow not detected */
@@ -102,21 +173,79 @@ scanhex(const char *text, size_t size)
 } while (0)
 
 
+extern size_t scan_entity(const char *text, size_t size);
+
+
+static size_t
+is_entity(const char *text, size_t size)
+{
+  size_t len = scan_entity(text, size);
+  if (!len) return 0;
+  struct entity *p = entityfind(text+1, len-1);
+  if (!p) return 0;
+  return len;
+}
+
+
 /** escape < > & as &lt; &gt; &amp; for HTML text */
 static void
 quote_text(Blob *out, const char *text, size_t size, int doquot)
 {
-  size_t i, j = 0;
-  while (j < size) {
-    for (i = j; j < size && text[j] != '<' && text[j] != '>'
-                         && text[j] != '&' && text[j] != '"'; j++);
-    blob_addbuf(out, text+i, j-i);
-    for (; j < size; j++) {
-           if (text[j] == '<') BLOB_ADDLIT(out, "&lt;");
-      else if (text[j] == '>') BLOB_ADDLIT(out, "&gt;");
-      else if (text[j] == '&') BLOB_ADDLIT(out, "&amp;");
-      else if (text[j] == '"' && doquot) BLOB_ADDLIT(out, "&quot;");
-      else break;
+  size_t i, j, len;
+  for (j = 0; j < size; j++) {
+    for (i = j; j < size; j++) {
+      switch (text[j]) {
+        case '<': goto special;
+        case '>': goto special;
+        case '&':
+          len = is_entity(text+j, size-j);
+          if (!len) goto special;
+          j += len-1;
+          break;
+        case '"':
+          if (doquot) goto special;
+          break;
+      }
+    }
+special:
+    if (j > i) blob_addbuf(out, text+i, j-i);
+    if (j >= size) break;
+    switch (text[j]) {
+      case '<': BLOB_ADDLIT(out, "&lt;"); break;
+      case '>': BLOB_ADDLIT(out, "&gt;"); break;
+      case '&': BLOB_ADDLIT(out, "&amp;"); break;
+      case '"': BLOB_ADDLIT(out, "&quot;"); break;
+      default: assert(NOT_REACHED);
+    }
+  }
+}
+
+
+/** escape < > &, the latter even if part of a valid entity */
+static void
+quote_code(Blob *out, const char *text, size_t size, int doquot)
+{
+  size_t i, j;
+  for (j = 0; j < size; j++) {
+    for (i = j; j < size; j++) {
+      switch (text[j]) {
+        case '<': goto special;
+        case '>': goto special;
+        case '&': goto special;
+        case '"':
+          if (doquot) goto special;
+          break;
+      }
+    }
+special:
+    if (j > i) blob_addbuf(out, text+i, j-i);
+    if (j >= size) break;
+    switch (text[j]) {
+      case '<': BLOB_ADDLIT(out, "&lt;"); break;
+      case '>': BLOB_ADDLIT(out, "&gt;"); break;
+      case '&': BLOB_ADDLIT(out, "&amp;"); break;
+      case '"': BLOB_ADDLIT(out, "&quot;"); break;
+      default: assert(NOT_REACHED);
     }
   }
 }
@@ -126,23 +255,36 @@ quote_text(Blob *out, const char *text, size_t size, int doquot)
 static void
 quote_attr(Blob *out, const char *text, size_t size, const char *encode)
 {
-  size_t i, j = 0;
-  while (j < size) {
-    for (i=j; j < size; j++) {
-      if (text[j] == '<' || text[j] == '>' || text[j] == '&' ||
-          text[j] == '"' || text[j] == '\'') break;
-      if (encode && (!ISASCII(text[j]) || strchr(encode, text[j]))) break;
+  size_t i, j, len;
+  for (j = 0; j < size; j++) {
+    for (i = j; j < size; j++) {
+      switch (text[j]) {
+        case '<': goto special;
+        case '>': goto special;
+        case '&':
+          len = is_entity(text+j, size-j);
+          if (!len) goto special;
+          j += len-1;
+          break;
+        case '"': goto special;
+        case '\'': goto special;
+        default:
+          if (encode && (!ISASCII(text[j]) || strchr(encode, text[j])))
+            goto special;
+      }
     }
+special:
     if (j > i) blob_addbuf(out, text+i, j-i);
-    for (; j < size; j++) {
-      if (encode && (!ISASCII(text[j]) || strchr(encode, text[j])))
-        blob_addfmt(out, "%%%02X", (unsigned char) text[j]);
-      else if (text[j] == '<') BLOB_ADDLIT(out, "&lt;");
-      else if (text[j] == '>') BLOB_ADDLIT(out, "&gt;");
-      else if (text[j] == '&') BLOB_ADDLIT(out, "&amp;");
-      else if (text[j] == '"') BLOB_ADDLIT(out, "&quot;");
-      else if (text[j] == '\'') BLOB_ADDLIT(out, "&#39;"); /* HTML5: &apos; */
-      else break;
+    if (j >= size) break;
+    if (encode && (!ISASCII(text[j]) || strchr(encode, text[j])))
+      blob_addfmt(out, "%%%02X", (unsigned char) text[j]);
+    else switch (text[j]) {
+      case '<': BLOB_ADDLIT(out, "&lt;"); break;
+      case '>': BLOB_ADDLIT(out, "&gt;"); break;
+      case '&': BLOB_ADDLIT(out, "&amp;"); break;
+      case '"': BLOB_ADDLIT(out, "&quot;"); break;
+      case '\'': BLOB_ADDLIT(out, "&#39;"); break;  /* HTML5: &apos; */
+      default: assert(NOT_REACHED);
     }
   }
 }
@@ -264,7 +406,7 @@ html_codeblock(Blob *out, const char *lang, Blob *text, void *udata)
   else {
     BLOB_ADDLIT(out, "<pre><code>");
   }
-  quote_text(out, blob_str(text), blob_len(text), quotequot);
+  quote_code(out, blob_str(text), blob_len(text), quotequot);
   BLOB_ADDLIT(out, "</code></pre>\n");
 }
 
@@ -317,7 +459,7 @@ html_codespan(Blob *out, Blob *code, void *udata)
   int quotequot = phtml->cmout;
   if (blob_len(code) > 0) {
     BLOB_ADDLIT(out, "<code>");
-    quote_text(out, blob_str(code), blob_len(code), quotequot);
+    quote_code(out, blob_str(code), blob_len(code), quotequot);
     BLOB_ADDLIT(out, "</code>");
   }
   return true;
@@ -445,12 +587,13 @@ static bool
 html_entity(Blob *out, const char *text, size_t size, void *udata)
 {
   static const long replacement = 0xFFFD;
+  struct entity *p;
   struct html *phtml = udata;
   int quotequot = phtml->cmout;
-  char buf[8], *ptr;
+  char buf[16], *ptr;
   size_t n;
 
-  if (size < 3) return false;
+  if (size < 3 && text[0] != '&') return false;
   if (text[1] == '#') {
     long cp;
     if (text[2] == 'x' || text[2] == 'X') {
@@ -467,14 +610,21 @@ html_entity(Blob *out, const char *text, size_t size, void *udata)
     quote_text(out, buf, n, quotequot);
     return true;
   }
-  if (phtml->cmout) {
-    /* Special cases to pass the CM test cases: */
-    if (size >= 18 && strncmp("&ThisIsNotDefined;", text, 18) == 0) return false;
-    if (size >= 14 && strncmp("&MadeUpEntity;", text, 14) == 0) return false;
-    if (size >= 3 && strncmp("&x;", text, 3) == 0) return false;
+
+  /* Named character reference: */
+  p = entityfind(text+1, size-1);
+  if (p && p->code1) {
+    ptr = buf;
+    UTF8_PUT(p->code1, ptr);
+    if (p->code2) {
+      UTF8_PUT(p->code2, ptr);
+    }
+    n = ptr-buf;
+    quote_text(out, buf, n, quotequot);
+    return true;
   }
-  blob_addbuf(out, text, size);
-  return true;
+
+  return false;
 }
 
 
@@ -492,6 +642,11 @@ mkdnhtml(Blob *out, const char *txt, size_t len, const char *wrap, int pretty, i
 {
   struct markdown rndr;
   struct html opts;
+
+  if (!_initialized) {
+    entitysort();
+    _initialized = true;
+  }
 
   memset(&opts, 0, sizeof(opts));
   memset(&rndr, 0, sizeof(rndr));

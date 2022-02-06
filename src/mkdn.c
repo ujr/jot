@@ -43,6 +43,7 @@
 #define ISALNUM(c) (ISALPHA(c) || ISDIGIT(c))
 #define TOUPPER(c) (ISLOWER(c) ? (c) - 'a' + 'A' : (c))
 
+#define PUBLIC  /* tag a function */
 #define UNUSED(x) ((void)(x))
 #define MIN(a,b) ((a) < (b) ? (a) : (b))
 
@@ -348,6 +349,16 @@ too_deep(Parser *parser)
 /* === lexical scanning === */
 
 
+/** scan a run of white space */
+static size_t
+scan_space(const char *text, size_t size)
+{
+  size_t j = 0;
+  while (j < size && ISSPACE(text[j])) j++;
+  return j;
+}
+
+
 /** scan white space but at most one newline */
 static size_t
 scan_innerspace(const char *text, size_t size)
@@ -520,7 +531,8 @@ scan_link_label(const char *text, size_t size)
   size_t j = 0;
   if (j >= size || text[j] != '[') return 0;
   for (++j; j < size; j++) {
-    if (text[j] == ']') break;
+    if (text[j] == ']') break;  /* terminates if unescaped */
+    if (text[j] == '[') return 0;  /* illegal if unescaped */
     if (text[j] == '\\') j++;
   }
   if (j >= size || text[j] != ']') return 0;
@@ -747,6 +759,33 @@ scan_codespan(const char *text, size_t size, struct slice *codeslice)
 }
 
 
+PUBLIC size_t
+scan_entity(const char *text, size_t size)
+{
+  size_t i, j = 0;
+  if (j >= size || text[j] != '&') return 0;
+  if (++j < size && text[j] == '#') {
+    if (++j < size && (text[j] == 'x' || text[j] == 'X')) {
+      j++;
+      for (i=j; j < size && ISXDIGIT(text[j]); j++);
+      if (j <= i) return 0;  /* need at least one hex digit */
+      if (j-i > 6) return 0; /* but at most 7 hex digits */
+    }
+    else {
+      for (i=j; j < size && ISDIGIT(text[j]); j++);
+      if (j <= i) return 0;  /* need at least one digit */
+      if (j-i > 7) return 0; /* but at most 7 digits */
+    }
+  }
+  else {
+    for (i=j; j < size && ISALNUM(text[j]); j++);
+    if (j <= i) return 0;  /* need at least one char */
+  }
+  if (j >= size || text[j] != ';') return 0;
+  return j+1;
+}
+
+
 static void
 do_escapes(Blob *out, const char *text, size_t size)
 {
@@ -767,6 +806,48 @@ do_escapes(Blob *out, const char *text, size_t size)
       blob_addchar(out, text[j]);
       i = j += 1;
     }
+  }
+}
+
+
+/** resolve escapes and entities */
+static void
+emit_url(Blob *out, const char *text, size_t size, Parser *parser)
+{
+  size_t i, j;
+  for (j = 0; ; ) {
+    for (i = j; j < size; j++) {
+      if (text[j] == '\\') break;
+      if (text[j] == '&') break;
+    }
+
+    if (j > i) blob_addbuf(out, text+i, j-i);
+    if (j >= size) break;
+
+    if (text[j] == '\\') {
+      if (j+1 < size && ISPUNCT(text[j+1])) {
+        blob_addchar(out, text[j+1]);
+        j += 2;
+        continue;
+      }
+      blob_addchar(out, '\\');
+      j += 1;
+      continue;
+    }
+
+    if (text[j] == '&') {
+      size_t len = scan_entity(text+j, size-j);
+      if (len && parser->render.entity &&
+          parser->render.entity(out, text+j, len, parser->udata)) {
+        j += len;
+        continue;
+      }
+      blob_addchar(out, '&');
+      j += 1;
+      continue;
+    }
+
+    assert(NOT_REACHED);
   }
 }
 
@@ -794,30 +875,10 @@ emit_entity(
 {
   /* by CM 2.5, only valid HTML5 entity names must be parsed; here we
      only parse for syntactical correctness and let the callback decide: */
-  size_t i, j = pos;
-  assert(pos < size);
-  assert(j < size && text[j] == '&');
-  if (++j < size && text[j] == '#') {
-    if (++j < size && (text[j] == 'x' || text[j] == 'X')) {
-      j++;
-      for (i=j; j < size && ISXDIGIT(text[j]); j++);
-      if (j <= i) return 0;  /* need at least one hex digit */
-      if (j-i > 6) return 0; /* but at most 7 hex digits */
-    }
-    else {
-      for (i=j; j < size && ISDIGIT(text[j]); j++);
-      if (j <= i) return 0;  /* need at least one digit */
-      if (j-i > 7) return 0; /* but at most 7 digits */
-    }
-  }
-  else {
-    for (i=j; j < size && ISALNUM(text[j]); j++);
-    if (j <= i) return 0;  /* need at least one char */
-  }
-  if (j < size && text[j] == ';') j++;
-  else return 0;
+  size_t len = scan_entity(text+pos, size-pos);
+  if (!len) return 0;
   assert(parser->render.entity != 0);
-  return parser->render.entity(out, text+pos, j-pos, parser->udata) ? j-pos : 0;
+  return parser->render.entity(out, text+pos, len, parser->udata) ? len : 0;
 }
 
 
@@ -859,7 +920,7 @@ emit_text(Blob *out, const char *text, size_t size, Parser *parser)
     for (; j < size; j++) {
       unsigned uc = ((unsigned) text[j]) & 0x7F;
       action = parser->livechars[uc];
-      if (action /*&& !too_deep(parser)*/) break;
+      if (action) break;
     }
     if (j > i) {
       if (parser->render.text)
@@ -1068,6 +1129,51 @@ get_link_parts(SpanTree *tree, size_t span,
 
 
 static void
+emit_plain(Blob *out, const char *text, SpanTree *tree, size_t span, Parser *parser)
+{
+  size_t child;
+  struct span *spans = blob_buf(tree->blob);
+  size_t ofs = spans[span].ofs + spans[span].m;
+  size_t end = spans[span].ofs + spans[span].len - spans[span].m;
+  char type;
+
+  for (child = spans[span].down; child; child = spans[child].next) {
+    if (ofs < spans[child].ofs)
+      emit_text(out, text+ofs, spans[child].ofs-ofs, parser);
+
+    type = spans[child].type;
+    if (strchr(parser->emphchars, type)) {
+      Blob *temp = blob_get(parser);
+      emit_plain(temp, text, tree, child, parser);
+      emit_text(out, blob_str(temp), blob_len(temp), parser);
+      blob_put(parser, temp);
+    }
+    else if (type == '[' || type == '!') {
+      size_t bodynode;
+      get_link_parts(tree, child, &bodynode, 0, 0);
+      emit_plain(out, text, tree, bodynode, parser);
+    }
+    else if (type == '`') {
+      size_t ofs = spans[child].ofs + spans[child].m;
+      size_t len = spans[child].len - 2*spans[child].m;
+      emit_text(out, text+ofs, len, parser);
+    }
+    else {
+      size_t ofs = spans[child].ofs;
+      size_t len = spans[child].len;
+      emit_text(out, text+ofs, len, parser);
+    }
+
+    ofs = spans[child].ofs + spans[child].len;
+  }
+  if (ofs < end) {
+    emit_text(out, text+ofs, end-ofs, parser);
+  }
+}
+
+// TODO limit recursion depth -- either here or when building tree!
+
+static void
 emit_span(Blob *out, const char *text, SpanTree *tree, size_t span, Parser *parser)
 {
   bool done = false;
@@ -1087,10 +1193,12 @@ emit_span(Blob *out, const char *text, SpanTree *tree, size_t span, Parser *pars
     size_t bodynode;
     struct slice linkslice, titleslice;
     get_link_parts(tree, span, &bodynode, &linkslice, &titleslice);
-    // TODO for images, plain text only (strip markdown), as it goes to alt attr
-    emit_spans(body, text, tree, bodynode, parser);  /* nested spans */
-    do_escapes(link, linkslice.s, linkslice.n);
-    do_escapes(title, titleslice.s, titleslice.n);
+    if (type == '!')
+      emit_plain(body, text, tree, bodynode, parser);  /* unmark nested spans */
+    else
+      emit_spans(body, text, tree, bodynode, parser);  /* render nested spans */
+    emit_url(link, linkslice.s, linkslice.n, parser);
+    emit_text(title, titleslice.s, titleslice.n, parser);
     done = type == '!'
       ? parser->render.image(out, link, title, body, parser->udata)
       : parser->render.link(out, link, title, body, parser->udata);
@@ -1115,9 +1223,6 @@ emit_span(Blob *out, const char *text, SpanTree *tree, size_t span, Parser *pars
     size_t ofs = spans[span].ofs;
     size_t len = spans[span].len;
     done = parser->render.htmltag(out, text+ofs, len, parser->udata);
-  }
-  else if (type == 'S') {
-    done = true;  /* silent node, do not emit */
   }
 
   if (!done)  /* if not processed, emit as plain text */
@@ -1327,7 +1432,8 @@ process_emphasis(struct delimlist *list, struct delim *start, size_t end, SpanTr
 static size_t
 process_links(struct delimlist *list, const char *text, size_t pos, size_t size, SpanTree *tree, Parser *parser)
 {
-  /* look back on stack for `[` or `![` delim
+  /* text[pos] is the closing bracket
+  // look back on stack for `[` or `![` delim
   // - if not found: emit literal `]`
   // - if found but inactive: drop opener from stack, emit `]`
   // - if found and active: scan ahead for inline/reference link/image
@@ -1359,17 +1465,23 @@ process_links(struct delimlist *list, const char *text, size_t pos, size_t size,
 
   /* add span and subspans for body, link, title: */
   addspan(tree, start->type, 1, start->ofs, end - start->ofs);  // entire link/image
+  // TODO fix this hack: just one span node that provides all fields we need
   addspan(tree, 'B', 0, start->ofs+start->len, pos-start->ofs-start->len); // body as 1st child
   addspan(tree, 'H', 0, pos, 0)->extra = linkslice; // link as 2nd child
   addspan(tree, 'T', 0, pos, 0)->extra = titleslice; // title as 3rd child
 
-  /* process body inlines: */
+  /* process body inlines; drop unmatched emph delims: */
   process_emphasis(list, start, pos, tree, parser);
+  for (ptr = start; ptr && ptr->ofs < pos; ptr = ptr->next)
+    if (strchr(parser->emphchars, ptr->type))
+      delim_drop(list, ptr);
 
-  /* brackets before link/image still group, but don't create links: */
-  for (ptr = list->head; ptr && ptr->ofs < pos; ptr = ptr->next)
-    if (ptr->type == '[')
-      ptr->flags &= ~DELIM_ACTIVE; // avoid links in links
+  /* brackets before link still group, but don't create links: */
+  if (start->type == '[') {  /* link, not image: */
+    for (ptr = list->head; ptr && ptr->ofs < pos; ptr = ptr->next)
+      if (ptr->type == '[')
+        ptr->flags &= ~DELIM_ACTIVE; // avoid links in links
+  }
 
   delim_drop(list, start);
   return end - pos;
@@ -1397,7 +1509,8 @@ parse_inlines(Blob *out, const char *text, size_t size, Parser *parser)
       delim_push(&delims, i, j-i, delim, DELIM_FLAGS(before, delim, after));
     }
     else if (text[j] == '[') {
-      bool isimg = j > 0 && text[j-1] == '!';
+      /* it's an image if preceded by an unescaped '!' */
+      bool isimg = j > 0 && text[j-1] == '!' && (j < 2 || text[j-2] != '\\');
       i = isimg ? j-1 : j;
       j += 1;
       delim_push(&delims, i, j-i, text[i], DELIM_ACTIVE);
@@ -1652,6 +1765,8 @@ is_linkdef(const char *text, size_t size, Linkdef *pdef)
 
   len = scan_link_label(text+j, size-j);
   if (!len) return 0;
+  /* must contain at lest one non-space-char: */
+  if (len <= 2 || scan_space(text+j+1, len-2) == len-2) return 0;
   idofs = j+1;
   j += len;
   idend = j-1;
@@ -1867,7 +1982,7 @@ parse_fencedcode(Blob *out, const char *text, size_t size, Parser *parser)
 
   if (parser->render.codeblock) {
     Blob *info = blob_get(parser);
-    do_escapes(info, text+infofs, infend-infofs);
+    emit_text(info, text+infofs, infend-infofs, parser);
     parser->render.codeblock(out, blob_str(info), temp, parser->udata);
     blob_put(parser, info);
   }
@@ -1981,6 +2096,9 @@ parse_list(Blob *out, char type, int start, const char *text, size_t size, Parse
   Blob *temp = blob_get(parser);
   size_t j, len;
   bool loose = false;
+
+  // TODO collect items into individual blobs and only at the end,
+  //      when loose/tight is known, finalize items and emit list
 
   /* list is sequence of list items of the same type: */
   for (j = 0; j < size; j += len) {
@@ -2306,6 +2424,7 @@ markdown(Blob *out, const char *text, size_t size, struct markdown *mkdn, int de
   init(&parser, mkdn, debug);
 
   /* 1st pass: collect references */
+  // TODO too simplistic for CM: must see linkdefs in block context
   for (start = 0; start < size; ) {
     Linkdef linkdef;
     size_t len = is_linkdef(text+start, size-start, &linkdef);

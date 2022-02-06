@@ -147,6 +147,8 @@ log.info("Checking Markdown rendering");
 mkdnskip = {
   [204]="leave precedence of duplicate link defs undefined",
   [206]="will not case-fold non-ASCII",
+  [539]="will not case-fold non-ASCII",
+  [543]="leave precedence of duplicate link defs undefined",
   [618]="be laxer on html tag syntax",
   [620]="be laxer on html tag syntax",
   [621]="be laxer on html tag syntax",
