@@ -8,6 +8,7 @@
 
 #include "blob.h"
 #include "log.h"
+#include "memory.h"
 #include "mkdn.h"
 #include "utils.h"
 
@@ -96,77 +97,6 @@ typedef struct linkdef {
   Slice link;
   Slice title;
 } Linkdef;
-
-
-/* === Pooled Memory Allocation === */  // TODO refactor out to its own file
-
-/* allows allocation from (larger) chunks that can be
-   released all at once; got idea from Hipp's unql code */
-
-typedef struct pool Pool;
-typedef struct chunk Chunk;
-
-struct chunk {
-  Chunk *next;          /* link to next mem chunk */
-};
-
-struct pool {
-  Chunk *chunk;         /* head of list of mem chunks */
-  char *ptr;            /* memory for allocation in this chunk */
-  size_t avail;         /* bytes still available in this chunk */
-  size_t alloc;         /* chunk size */
-};
-
-#define POOL_INIT { 0, 0, 0, 0 }
-
-void
-mem_pool_init(Pool *pool, size_t chunk_size)
-{
-  assert(pool);
-  if (!chunk_size) chunk_size = 4000;
-  memset(pool, 0, sizeof(*pool));
-  pool->alloc = chunk_size;
-}
-
-void
-mem_pool_free(Pool *pool)
-{
-  Chunk *chunk, *next;
-  assert(pool);
-  for (chunk = pool->chunk; chunk; chunk = next) {
-    next = chunk->next;
-    free(chunk);
-  }
-  memset(pool, 0, sizeof(*pool));
-}
-
-void *
-mem_pool_alloc(Pool *pool, size_t n)
-{
-  void *p;
-  assert(pool);
-  n = (n+7)&~7;  /* round up to multiple of 8 */
-  if (n > pool->alloc/2) {  /* large alloc gets its own chunk */
-    Chunk *chunk = malloc(n+8);
-    if (!chunk) return 0;
-    chunk->next = pool->chunk;
-    pool->chunk = chunk;
-    return &((char*) chunk)[8];
-  }
-  if (pool->avail < n) {
-    Chunk *chunk = malloc(pool->alloc + 8);
-    if (!chunk) return 0;
-    chunk->next = pool->chunk;
-    pool->chunk = chunk;
-    pool->ptr = (char *) chunk;
-    pool->ptr += 8;
-    pool->avail = pool->alloc;
-  }
-  p = pool->ptr;
-  pool->ptr += n;
-  pool->avail -= n;
-  return p;
-}
 
 
 /** html block tags, ordered as by tagname_cmp (first len, then lexic) */
@@ -313,11 +243,8 @@ blob_get(Parser *parser)
   Blob *ptr;
   if (parser->pool_index > 0)
     return parser->blob_pool[--parser->pool_index];
-  ptr = malloc(sizeof(*ptr));
-  if (!ptr) {
-    perror("malloc");
-    abort(); // TODO error handler
-  }
+  ptr = mem_alloc(sizeof(*ptr));
+  assert(ptr != OUT_OF_MEMORY);
   *ptr = empty;
   return ptr;
 }
@@ -334,7 +261,7 @@ blob_put(Parser *parser, Blob *blob)
   else {
     log_debug("mkdn: blob pool exhausted; freeing blob instead of caching");
     blob_free(blob);
-    free(blob);
+    mem_free(blob);
   }
 }
 
@@ -1258,7 +1185,7 @@ struct delim {   /* delimiter run */
 struct delimlist {
   struct delim *head;
   struct delim *tail;
-  Pool pool;
+  MemPool pool;
 };
 
 #define DELIMLIST_INIT { 0, 0, POOL_INIT }
@@ -2424,7 +2351,7 @@ markdown(Blob *out, const char *text, size_t size, struct markdown *mkdn, int de
   while (parser.pool_index > 0) {
     parser.pool_index--;
     blob_free(parser.blob_pool[parser.pool_index]);
-    free(parser.blob_pool[parser.pool_index]);
+    mem_free(parser.blob_pool[parser.pool_index]);
   }
 }
 
