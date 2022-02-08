@@ -1549,10 +1549,12 @@ is_quoteline(const char *text, size_t size)
 static size_t
 is_codeline(const char *text, size_t size)
 {
-  if (size > 0 && text[0] == '\t') return 1;
-  if (size > 3 && text[0] == ' ' && text[1] == ' ' &&
-                  text[2] == ' ' && text[3] == ' ') return 4;
-  return 0;
+  size_t j, max = MIN(4, size);
+  for (j = 0; j < max; j++) {
+    if (text[j] == '\t') return j+1;
+    if (text[j] != ' ') return 0;
+  }
+  return j < size ? j : 0;
 }
 
 
@@ -2241,8 +2243,9 @@ parse_blocks(Blob *out, const char *text, size_t size, Parser *parser, BlockInfo
     else {
       /* Non-blank lines that cannot be interpreted otherwise
          form a paragraph in Markdown/CommonMark: */
-      len = parse_paragraph(out, ptr, end, parser, &unwrapped);
-      isblock = !unwrapped;
+      bool unwrap = unwrapped;
+      len = parse_paragraph(out, ptr, end, parser, &unwrap);
+      isblock = !unwrap;
     }
 
     if (start == 0) block1 = isblock;
@@ -2326,7 +2329,6 @@ markdown(Blob *out, const char *text, size_t size, struct markdown *mkdn, int de
       blob_addbuf(&parser.linkdefs, (void*)&linkdef, sizeof(linkdef));
     }
     else {
-      // TODO pre process into buffer: expand tabs (size=4), newlines to \n, \0 to U+FFFD
       len = scan_line(text+start, size-start);
       if (len) start += len;
       else break;
