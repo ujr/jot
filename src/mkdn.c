@@ -14,17 +14,20 @@
 
 
 /* Markdown has block elements and inline (span) elements.
- * Reference style links (and images) are forward-looking,
+ * Reference style links and images can be forward-looking,
  * so we need to collect link definitions before the actual
- * rendering in a second pass over the Markdown. The second
- * pass will parse the input into a sequence of "blocks"
- * and, within each block, parse "inlines" such as emphasis
- * or links. Some block types can contain other blocks.
+ * rendering in a second pass over the Markdown.
+ * The input is parsed into a sequence of blocks, and within
+ * each block the inlines are parsed and passed through the
+ * render callbacks to the output buffer. Note that list and
+ * quote blocks are containers for nested blocks.
  *
  * The parser here is inspired by the one in Fossil SCM,
  * which itself derives from the parser by Natacha Porté,
  * but inline parsing follows the algorithm sketched in
- * the CommonMark specification.
+ * the CommonMark specification. We assume ASCII or UTF-8
+ * input but do not decode Unicode code points (and thus
+ * fail some CommonMark requirements).
  */
 
 
@@ -44,7 +47,7 @@
 #define ISALNUM(c) (ISALPHA(c) || ISDIGIT(c))
 #define TOUPPER(c) (ISLOWER(c) ? (c) - 'a' + 'A' : (c))
 
-#define PUBLIC  /* tag a function */
+#define PUBLIC  /* to tag public (non-static) functions */
 #define UNUSED(x) ((void)(x))
 #define MIN(a,b) ((a) < (b) ? (a) : (b))
 
@@ -66,10 +69,10 @@ struct parser {
   struct markdown render;
   void *udata;
   int debug;
-  int nesting_depth;
+  int nesting_depth;         /* to limit recursion depth */
   int in_link;               /* to inhibit links within links */
   Blob linkdefs;             /* collected link definitions */
-  Blob *blob_pool[32];
+  Blob *blob_pool[64];
   size_t pool_index;
   CharProc livechars[128];   /* chars like & and \ that trigger an action */
   char emphchars[32];        /* all chars that mark emphasis */
@@ -92,11 +95,11 @@ static Slice slice(const char *s, size_t len) {
 }
 
 
-typedef struct linkdef {
-  Slice id;
+struct linkdef {
+  const char *label;
   Slice link;
   Slice title;
-} Linkdef;
+};
 
 
 /** html block tags, ordered as by tagname_cmp (first len, then lexic) */
@@ -202,38 +205,6 @@ tagname_find(const char *text, size_t size)
 }
 
 
-static int
-linkdef_cmp(const void *a, const void *b)
-{
-  const struct linkdef *pa = a;
-  const struct linkdef *pb = b;
-  if (pa->id.n < pb->id.n) return -1;
-  if (pa->id.n > pb->id.n) return +1;
-  return strnicmp(pa->id.s, pb->id.s, pa->id.n);
-}
-
-
-/** find link by its label; return true iff found */
-static int
-linkdef_find(
-  const char *text, size_t size, Parser *parser,
-  struct slice *link, struct slice *title)
-{
-  struct linkdef key, *ptr;
-  size_t msize = sizeof(struct linkdef);
-  size_t nmemb = blob_len(&parser->linkdefs)/msize;
-  if (!nmemb) return 0;
-  key.id = slice(text, size);
-  key.link = slice(0, 0);
-  key.title = slice(0, 0);
-  ptr = bsearch(&key, blob_buf(&parser->linkdefs), nmemb, msize, linkdef_cmp);
-  if (!ptr) return 0;
-  if (link) *link = ptr->link;
-  if (title) *title = ptr->title;
-  return 1;
-}
-
-
 /* === housekeeping === */
 
 static Blob*
@@ -270,6 +241,61 @@ static bool
 too_deep(Parser *parser)
 {
   return parser->nesting_depth > 100;
+}
+
+
+/** make link label: trim, fold, space runs to one blank */
+static const char *
+make_label(const char *text, size_t size, Blob *buf)
+{
+  size_t j;
+  bool inrun = false;
+  blob_clear(buf);
+  for (j = 0; j < size && ISSPACE(text[j]); j++);
+  for (; j < size; j++) {
+    if (ISSPACE(text[j])) inrun = true;
+    else {
+      if (inrun) {
+        blob_addchar(buf, ' ');
+        inrun = false;
+      }
+      blob_addchar(buf, TOUPPER(text[j]));
+    }
+  }
+  return blob_str(buf);
+}
+
+
+static int
+linkdef_cmp(const void *a, const void *b)
+{
+  const struct linkdef *pa = a;
+  const struct linkdef *pb = b;
+  return strcmp(pa->label, pb->label);
+}
+
+
+/** find link by its label; return true iff found */
+static int
+linkdef_find(
+  const char *text, size_t size, Parser *parser,
+  Slice *plink, Slice *ptitle)
+{
+  Blob *buf;
+  struct linkdef key, *ptr;
+  size_t msize = sizeof(struct linkdef);
+  size_t nmemb = blob_len(&parser->linkdefs)/msize;
+  if (!nmemb) return 0;
+  buf = blob_get(parser);
+  key.label = make_label(text, size, buf);
+  key.link = slice(0, 0);
+  key.title = slice(0, 0);
+  ptr = bsearch(&key, blob_buf(&parser->linkdefs), nmemb, msize, linkdef_cmp);
+  blob_put(parser, buf);
+  if (!ptr) return 0;
+  if (plink) *plink = ptr->link;
+  if (ptitle) *ptitle = ptr->title;
+  return 1;
 }
 
 
@@ -469,16 +495,15 @@ scan_link_label(const char *text, size_t size)
 
 /** scan link url and title; return length or 0 on failure */
 static size_t
-scan_link_and_title(const char *text, size_t size,
-  struct slice *link, struct slice *title)
+scan_link_and_title(const char *text, size_t size, Slice *plink, Slice *ptitle)
 {
   size_t linkofs, linkend;
   size_t titlofs, titlend;
   size_t j = 0, end;
 
   /* ensure out params are defined: */
-  if (link) *link = slice(text, 0);
-  if (title) *title = slice(text, 0);
+  if (plink) *plink = slice(text, 0);
+  if (ptitle) *ptitle = slice(text, 0);
 
   if (j < size && text[j] == '<') {
     /* link in angle brackets, no line endings, no unescaped < or > */
@@ -527,8 +552,8 @@ scan_link_and_title(const char *text, size_t size,
     end = ++j;  /* consume the closing delim */
   }
 
-  if (link) *link = slice(text+linkofs, linkend-linkofs);
-  if (title) *title = slice(text+titlofs, titlend-titlofs);
+  if (plink) *plink = slice(text+linkofs, linkend-linkofs);
+  if (ptitle) *ptitle = slice(text+titlofs, titlend-titlofs);
 
   return end;
 }
@@ -536,12 +561,12 @@ scan_link_and_title(const char *text, size_t size,
 
 static size_t
 scan_inline_link(const char *text, size_t size,
-  struct slice *linkslice, struct slice *titleslice)
+  Slice *plink, Slice *ptitle)
 {
   size_t j = 0, len;
   if (size < 2 || text[j] != '(') return 0;
   for (++j; j < size && ISBLANK(text[j]); j++);
-  len = scan_link_and_title(text+j, size-j, linkslice, titleslice);
+  len = scan_link_and_title(text+j, size-j, plink, ptitle);
   if (!len && text[j] != ')') return 0;  /* allow empty () */
   j += len;
   while (j < size && ISBLANK(text[j])) j++;
@@ -553,7 +578,7 @@ scan_inline_link(const char *text, size_t size,
 static size_t
 scan_link_tail(
   const char *text, size_t size, size_t bodyofs, size_t bodyend,
-  Parser *parser, struct slice *linkslice, struct slice *titleslice)
+  Parser *parser, Slice *plink, Slice *ptitle)
 {
   /* There are our types of links: all start with [body], which was
   // already parsed and is available through bodyofs and bodyend:
@@ -573,7 +598,7 @@ scan_link_tail(
      inline (...), reference [label], collapsed [], shortcut */
 
   if (j < size && text[j] == '(') {  /* inline link */
-    len = scan_inline_link(text+j, size-j, linkslice, titleslice);
+    len = scan_inline_link(text+j, size-j, plink, ptitle);
     if (len) return j+len;
     /* else: could still be a reference or shortcut link! */
   }
@@ -583,62 +608,19 @@ scan_link_tail(
     if (len < 2) return 0;
     if (!parser) return j+len;
     if (len == 2) {  /* collapsed link: [] */
-      if (!linkdef_find(bodyptr, bodylen, parser, linkslice, titleslice))
+      if (!linkdef_find(bodyptr, bodylen, parser, plink, ptitle))
         return 0;
     }
     else {  /* reference link: [ref] */
-      if (!linkdef_find(text+j+1, len-2, parser, linkslice, titleslice))
+      if (!linkdef_find(text+j+1, len-2, parser, plink, ptitle))
         return 0;
     }
     return j + len;
   }
   /* shortcut link (no label at all, just text in brackets) */
   if (!parser) return j;
-  return linkdef_find(bodyptr, bodylen, parser, linkslice, titleslice) ? j : 0;
+  return linkdef_find(bodyptr, bodylen, parser, plink, ptitle) ? j : 0;
 }
-
-
-#if 0
-static size_t
-scan_link_body(const char *text, size_t size)
-{
-  size_t j = 0;
-  int level;
-
-  if (j >= size || text[j] != '[') return 0;
-  /* allow balanced brackets while looking for closing bracket: */
-  for (level = 1, ++j; j < size; j++) {
-    if (text[j] == '\\') { j++; continue; }
-    if (text[j] == '[') level += 1;
-    else if (text[j] == ']') {
-      if (--level <= 0) break;
-    }
-  }
-  if (j >= size) return 0;  /* unmatched '[' */
-  return j+1;  /* include closing bracket */
-}
-
-
-/** scan full link: inline, reference, collapsed, or shortcut */
-static size_t
-scan_full_link(const char *text, size_t size, Parser *parser,
-  struct slice *bodyslice, struct slice *linkslice, struct slice *titleslice)
-{
-  const char *bodyptr;
-  size_t j = 0, len, bodylen;
-
-  if (size < 2 || text[j] != '[') return 0;
-  len = scan_link_body(text, size);
-  if (!len) return 0;
-  j += len;
-
-  bodyptr = text+1;
-  bodylen = len-2;
-  if (bodyslice) *bodyslice = slice(bodyptr, bodylen);
-
-  return scan_link_tail(text, size, 0, len, parser, linkslice, titleslice);
-}
-#endif
 
 
 static size_t
@@ -652,23 +634,33 @@ scan_tickrun(const char *text, size_t size)
 
 
 static size_t
-scan_codespan(const char *text, size_t size, struct slice *codeslice)
+scan_codespan(const char *text, size_t size, Slice *codeslice)
 {
   /* text enclosed in backtick strings of equal length;
      if blanks at start AND end, trim ONE on each side */
   size_t j, oticks, cticks;
   char delim;
+  bool allblank;
 
   if (size < 2) return 0;
   delim = text[0];
+  assert(!ISBLANK(delim));
   for (j = 1; j < size && text[j] == delim; j++);
   oticks = j;
 
-  for (cticks = 0; j < size; j++) {
+  for (cticks = 0, allblank = 0; j < size; j++) {
     if (text[j] == delim) cticks += 1;
-    else if (cticks == oticks) break;
-    else cticks = 0;
-    // TODO if blank line: stop (not a codespan)
+    else {
+      if (cticks == oticks) break;
+      cticks = 0;
+      /* code span cannot contain blank line */
+      if (text[j] == '\n' || text[j] == '\r') {
+        if (allblank) return 0;
+        allblank = true;
+        if (text[j] == '\r' && j+1 < size && text[j+1] == '\n') ++j;
+      }
+      else if (!ISBLANK(text[j])) allblank = false;
+    }
   }
 
   if (cticks != oticks) return 0;
@@ -711,30 +703,6 @@ scan_entity(const char *text, size_t size)
   if (j >= size || text[j] != ';') return 0;
   return j+1;
 }
-
-
-// static void
-// do_escapes(Blob *out, const char *text, size_t size)
-// {
-//   size_t i, j;
-//   for (i = j = 0; j < size; ) {
-//     for (; j < size; j++) {
-//       if (text[j] == '\\') break;
-//     }
-//     if (j > i) {
-//       blob_addbuf(out, text+i, j-i);
-//       i = j;
-//     }
-//     if (j >= size) break;
-//     assert(i == j);
-//     assert(text[j] == '\\');
-//     j += 1;  /* leave i unchanged to add \ to run of text */
-//     if (j < size && ISPUNCT(text[j])) {
-//       blob_addchar(out, text[j]);
-//       i = j += 1;
-//     }
-//   }
-// }
 
 
 /** resolve escapes and entities */
@@ -886,17 +854,22 @@ emit_codespan(Blob *out, const char *text, size_t size)
 typedef struct span Span;
 typedef struct spantree SpanTree;
 
+// TODO alloc each span and use pointers instead of indexes (easier to read)
+
 struct span {
   char type;            /* emph or link or ... */
   size_t olen, clen;    /* delimiter length (open and close) */
   size_t ofs, len;      /* stretch of text span */
   size_t down, next;    /* tree linkage */
-  struct slice href, title;  /* payload for links */
+  Slice href, title;    /* payload for links */
 };
 
 struct spantree {
   Blob *blob;           /* node storage */
 };
+
+#define SPAN_SPANS(tree) (blob_buf(tree->blob))
+#define SPAN_COUNT(tree) (blob_len(tree->blob)/sizeof(struct span))
 
 #if 0
 static void
@@ -971,8 +944,8 @@ addspan(SpanTree *tree, char type, size_t ofs, size_t len, size_t olen, size_t c
   span->down = span->next = 0;
   blob_addlen(tree->blob, sizeof(*span));
 
-  spans = blob_buf(tree->blob);
-  count = blob_len(tree->blob)/sizeof(*span);
+  spans = SPAN_SPANS(tree);
+  count = SPAN_COUNT(tree);
 
   cur = root;
   new = count-1;  /* the new span */
@@ -1037,10 +1010,15 @@ static void
 emit_plain(Blob *out, const char *text, SpanTree *tree, size_t span, Parser *parser)
 {
   size_t child;
-  struct span *spans = blob_buf(tree->blob);
+  struct span *spans = SPAN_SPANS(tree);
   size_t ofs = spans[span].ofs + spans[span].olen;
   size_t end = spans[span].ofs + spans[span].len - spans[span].clen;
   char type;
+
+  if (too_deep(parser)) {
+    emit_text(out, text+spans[span].ofs, spans[span].len, parser);
+    return;
+  }
 
   for (child = spans[span].down; child; child = spans[child].next) {
     if (ofs < spans[child].ofs)
@@ -1074,14 +1052,19 @@ emit_plain(Blob *out, const char *text, SpanTree *tree, size_t span, Parser *par
   }
 }
 
-// TODO limit recursion depth -- either here or when building tree!
 
 static void
 emit_span(Blob *out, const char *text, SpanTree *tree, size_t span, Parser *parser)
 {
   bool done = false;
-  struct span *spans = blob_buf(tree->blob);
+  struct span *spans = SPAN_SPANS(tree);
   char type = spans[span].type;
+
+  if (too_deep(parser)) {
+    emit_text(out, text+spans[span].ofs, spans[span].len, parser);
+    return;
+  }
+
   if (strchr(parser->emphchars, type) && parser->render.emphasis) {
     Blob *temp = blob_get(parser);
     char c = spans[span].type;
@@ -1095,8 +1078,8 @@ emit_span(Blob *out, const char *text, SpanTree *tree, size_t span, Parser *pars
     Blob *body = blob_get(parser);
     Blob *link = blob_get(parser);
     Blob *title = blob_get(parser);
-    struct slice linkslice = spans[span].href;
-    struct slice titleslice = spans[span].title;
+    Slice linkslice = spans[span].href;
+    Slice titleslice = spans[span].title;
     if (type == '!')
       emit_plain(body, text, tree, span, parser);  /* unmark nested spans */
     else
@@ -1138,7 +1121,7 @@ static void
 emit_spans(Blob *out, const char *text, SpanTree *tree, size_t span, Parser *parser)
 {
   size_t child;
-  struct span *spans = blob_buf(tree->blob);
+  struct span *spans = SPAN_SPANS(tree);
   size_t ofs = spans[span].ofs + spans[span].olen;
   size_t end = spans[span].ofs + spans[span].len - spans[span].clen;
 
@@ -1338,7 +1321,7 @@ process_links(struct delimlist *list, const char *text, size_t pos, size_t size,
   */
   struct delim *start, *ptr;
   struct span *span;
-  struct slice linkslice, titleslice;
+  Slice linkslice, titleslice;
   size_t ofs, end, olen, clen;
 
   /* look back for opening bracket: */
@@ -1414,9 +1397,9 @@ parse_inlines(Blob *out, const char *text, size_t size, Parser *parser)
       j += process_links(&delims, text, j, size, &tree, parser);
     }
     else if (text[j] == '`') {
-      struct slice codeslice;
+      Slice codeslice;
       len = scan_codespan(text+j, size-j, &codeslice);
-      if (len) { int flags = ((len-codeslice.n)/2) << DELIM_SHIFT; // TODO HACK
+      if (len) { int flags = ((len-codeslice.n)/2) << DELIM_SHIFT;
         delim_push(&delims, j, len, '`', flags);
         j += len;
       }
@@ -1652,10 +1635,10 @@ post:
 
 /** check for link definition; return length or 0 */
 static size_t
-is_linkdef(const char *text, size_t size, Linkdef *pdef)
+is_linkdef(const char *text, size_t size,
+  Slice *plabel, Slice *plink, Slice *ptitle)
 {
   size_t idofs, idend;
-  struct slice link, title;
   size_t len, j = preblanks(text, size);
 
   len = scan_link_label(text+j, size-j);
@@ -1676,18 +1659,15 @@ is_linkdef(const char *text, size_t size, Linkdef *pdef)
   if (text[j] == '\n' && text[j-1] == '\r') j++;
   while (j < size && ISBLANK(text[j])) j++;
 
-  len = scan_link_and_title(text+j, size-j, &link, &title);
+  len = scan_link_and_title(text+j, size-j, plink, ptitle);
   if (!len) return 0;
   j += len;
   len = is_blankline(text+j, size-j);
   if (!len) return 0;  /* junk after link def */
   j += len;
 
-  if (pdef) {
-    pdef->id = slice(text+idofs, idend-idofs);
-    pdef->link = link;
-    pdef->title = title;
-  }
+  if (plabel) *plabel = slice(text+idofs, idend-idofs);
+
   return j;
 }
 
@@ -1969,16 +1949,21 @@ parse_listitem(Blob *out, char type, bool *ploose, const char *text, size_t size
   /* item is now in temp blob; process blocks and inlines: */
   BlockInfo info;
   info.unwrapped = !*ploose;
-  Blob *inner = blob_get(parser);
-  parse_blocks(inner, blob_str(temp), blob_len(temp), parser, &info);
+
+  if (too_deep(parser)) { /* do not parse, just render as text */ }
+  else {
+    Blob *inner = blob_get(parser);
+    parse_blocks(inner, blob_str(temp), blob_len(temp), parser, &info);
+    blob_put(parser, temp);
+    temp = inner;
+  }
 
   if (parser->render.listitem) {
     int tightstart = !info.is_block_first;
     int tightend = !info.is_block_last;
-    parser->render.listitem(out, tightstart, tightend, inner, parser->udata);
+    parser->render.listitem(out, tightstart, tightend, temp, parser->udata);
   }
 
-  blob_put(parser, inner);
   blob_put(parser, temp);
 
   return j;
@@ -2232,7 +2217,7 @@ parse_blocks(Blob *out, const char *text, size_t size, Parser *parser, BlockInfo
       len = parse_htmlblock(out, ptr, end, len, htmlkind, parser);
     }
     // TODO table lines
-    else if ((len = is_linkdef(ptr, end, 0))) {
+    else if ((len = is_linkdef(ptr, end, 0, 0, 0))) {
       /* nothing to do, just skip it */
       isblock = false;
     }
@@ -2308,25 +2293,35 @@ init(Parser *parser, struct markdown *mkdn, int debug)
 }
 
 
-void
+PUBLIC void
 markdown(Blob *out, const char *text, size_t size, struct markdown *mkdn, int debug)
 {
   size_t start;
   Parser parser;
+  MemPool pool;
 
   if (!text || !size || !mkdn) return;
   assert(out != NULL);
 
   init(&parser, mkdn, debug);
+  mem_pool_init(&pool, 2000);
 
   /* 1st pass: collect references */
   // TODO too simplistic for CM: must see linkdefs in block context
   for (start = 0; start < size; ) {
-    Linkdef linkdef;
-    size_t len = is_linkdef(text+start, size-start, &linkdef);
+    Slice label, link, title;
+    size_t len = is_linkdef(text+start, size-start, &label, &link, &title);
     if (len) {
+      struct linkdef *pdef = blob_prepare(&parser.linkdefs, sizeof(*pdef));
+      Blob *buf = blob_get(&parser);
+      make_label(label.s, label.n, buf);
+      pdef->label = mem_pool_dup(&pool, blob_str(buf), blob_len(buf));
+      assert(pdef->label != OUT_OF_MEMORY);
+      pdef->link = link;
+      pdef->title = title;
+      blob_addlen(&parser.linkdefs, sizeof(*pdef));
+      blob_put(&parser, buf);
       start += len;
-      blob_addbuf(&parser.linkdefs, (void*)&linkdef, sizeof(linkdef));
     }
     else {
       len = scan_line(text+start, size-start);
@@ -2355,6 +2350,7 @@ markdown(Blob *out, const char *text, size_t size, struct markdown *mkdn, int de
     blob_free(parser.blob_pool[parser.pool_index]);
     mem_free(parser.blob_pool[parser.pool_index]);
   }
+  mem_pool_free(&pool);
 }
 
 

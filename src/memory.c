@@ -114,3 +114,17 @@ mem_pool_alloc(MemPool *pool, size_t n)
   pool->avail -= n;
   return p;
 }
+
+
+char *
+mem_pool_dup(MemPool *pool, const char *s, size_t n)
+{
+  char *r;
+  assert(pool);
+  r = mem_pool_alloc(pool, n+1);
+  if (r) {
+    memcpy(r, s, n);
+    r[n] = 0;
+  }
+  return r;
+}

@@ -29,4 +29,5 @@ struct mempool {
 
 void mem_pool_init(MemPool *pool, size_t chunk_size);
 void *mem_pool_alloc(MemPool *pool, size_t n);
+char *mem_pool_dup(MemPool *pool, const char *s, size_t n);
 void mem_pool_free(MemPool *pool);
