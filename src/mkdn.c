@@ -10,7 +10,6 @@
 #include "log.h"
 #include "memory.h"
 #include "mkdn.h"
-#include "utils.h"
 
 
 /* Markdown has block elements and inline (span) elements.
@@ -31,6 +30,8 @@
  */
 
 
+/* Avoid <ctype.h> here as we strictly assume UTF-8 encoded Unicode
+   and want to avoid potential local issues. */
 #define ISASCII(c) (0 <= (c) && (c) <= 127)
 #define ISCNTRL(c) ((0 <= (c) && (c) < 32) || (c) == 127)
 #define ISPUNCT(c) (('!' <= (c) && (c) <= '/')  /* 21..2F  !"#$%&'()*+,-./ */ \
@@ -45,6 +46,7 @@
 #define ISUPPER(c) ('A' <= (c) && (c) <= 'Z')
 #define ISALPHA(c) (ISLOWER(c) || ISUPPER(c))
 #define ISALNUM(c) (ISALPHA(c) || ISDIGIT(c))
+#define TOLOWER(c) (ISUPPER(c) ? (c) - 'A' + 'a' : (c))
 #define TOUPPER(c) (ISLOWER(c) ? (c) - 'a' + 'A' : (c))
 
 #define PUBLIC  /* to tag public (non-static) functions */
@@ -60,6 +62,19 @@
 #define ARLEN(a) (sizeof(a)/sizeof((a)[0]))
 
 
+/** strncasecmp(3), which is not in ANSI C */
+static int
+strnicmp(const char *s, const char *t, size_t n)
+{
+  if (n == 0) return 0;
+  n--;  /* do last comparison after the loop */
+  while (n && *s && *t && (*s == *t || TOLOWER(*s) == TOLOWER(*t))) {
+    s++; t++; n--;
+  }
+  return TOLOWER(*s) - TOLOWER(*t);
+}
+
+
 typedef struct parser Parser;
 
 typedef size_t (*CharProc)(
@@ -72,7 +87,7 @@ struct parser {
   int nesting_depth;         /* to limit recursion depth */
   int in_link;               /* to inhibit links within links */
   Blob linkdefs;             /* collected link definitions */
-  Blob *blob_pool[64];
+  Blob *blob_pool[100];
   size_t pool_index;
   CharProc livechars[128];   /* chars like & and \ that trigger an action */
   char emphchars[32];        /* all chars that mark emphasis */
@@ -207,6 +222,7 @@ tagname_find(const char *text, size_t size)
 
 /* === housekeeping === */
 
+
 static Blob*
 blob_get(Parser *parser)
 {
@@ -259,7 +275,7 @@ make_label(const char *text, size_t size, Blob *buf)
         blob_addchar(buf, ' ');
         inrun = false;
       }
-      blob_addchar(buf, TOUPPER(text[j]));
+      blob_addchar(buf, TOLOWER(text[j]));
     }
   }
   return blob_str(buf);
@@ -1640,6 +1656,7 @@ is_linkdef(const char *text, size_t size,
 {
   size_t idofs, idend;
   size_t len, j = preblanks(text, size);
+  size_t i, n;
 
   len = scan_link_label(text+j, size-j);
   if (!len) return 0;
@@ -1661,10 +1678,19 @@ is_linkdef(const char *text, size_t size,
 
   len = scan_link_and_title(text+j, size-j, plink, ptitle);
   if (!len) return 0;
+  i = j; n = len;
   j += len;
   len = is_blankline(text+j, size-j);
-  if (!len) return 0;  /* junk after link def */
-  j += len;
+  if (len) j += len;
+  else {  /* junk after link def */
+    const char *p;
+    if ((p = memchr(text+i, '\n', n)) || (p = memchr(text+i, '\r', n))) {
+      if (ptitle) ptitle->n = 0;
+      j = p - text;
+      if (text[j] == '\r' && j+1 < size && text[j+1] == '\n') j++;
+    }
+    else return 0;
+  }
 
   if (plabel) *plabel = slice(text+idofs, idend-idofs);
 
@@ -1882,7 +1908,8 @@ parse_listitem(Blob *out, char type, bool *ploose, const char *text, size_t size
   size_t pre, i, j, len, sub;
   int start, wasblank;
   char itemtype;
-  bool firstblank, nested;
+  bool firstblank;
+  bool iscode, wascode;
 
   assert(ploose != 0);
 
@@ -1892,9 +1919,9 @@ parse_listitem(Blob *out, char type, bool *ploose, const char *text, size_t size
   if (is_ruleline(text, size)) return 0;  /* lines like "- - -" are hrules */
 
   j = pre;
-  sub = 0;
-  nested = false;
+  sub = pre;
   firstblank = false;
+  wascode = false;
   wasblank = 0;
   temp = blob_get(parser);
 
@@ -1902,7 +1929,7 @@ parse_listitem(Blob *out, char type, bool *ploose, const char *text, size_t size
   len = 0;
   if (j >= size || (len = is_blankline(text+j, size-j))) {
     firstblank = true;
-    pre = 2;
+    sub = pre = 2;
     j += len;
   }
   else {
@@ -1921,19 +1948,29 @@ parse_listitem(Blob *out, char type, bool *ploose, const char *text, size_t size
       wasblank += 1;
       continue;
     }
-    /* find indent (up to pre): */
-    for (i = 0; i < pre && j+i < size && text[j+i] == ' '; i++);
+    /* find indent: */
+    for (i = 0; j+i < size && text[j+i] == ' '; i++);
     if (i < pre && is_ruleline(text+j, size-j)) break;
-    if (i < 4 && (sub = is_itemline(text+j+i, size-j-i, 0, 0))) {
-      if (i >= pre) nested = true;
-      if (wasblank && !nested) *ploose = true;
-      if (i < pre) break;  /* next (non-sub-) item ends current item */
+    /* next non-sub list item ends current item: */
+    if (i < sub+4 && (len = is_itemline(text+j+i, size-j-i, 0, 0))) {
+      sub = len+i;
+      if (i < pre) {
+        if (wasblank) *ploose = true;
+        break;  /* next (non-sub-) item ends current item */
+      }
     }
+    assert(pre <= sub);
+    iscode = is_codeline(text+j+sub, size-j-sub);
+    /* less indented stuff after blank line ends item: */
     if (wasblank) {
-      if (i < pre) break;  /* less indented after blank line ends item */
-      if (!nested) *ploose = true;
-      if (i == pre) nested = false;
+      if (i < pre) break; /* less indented after blank line ends item */
+      if (i < pre+2) { // TODO 2 is heuristic, want: pre <= i < immediate sub
+        *ploose = true;
+      }
+      if (!wascode && iscode)
+        *ploose = true;  /* the blank line before code block */
     }
+    wascode = iscode;
     for (; wasblank > 0; wasblank--)
       blob_addchar(temp, '\n');
 
@@ -1947,25 +1984,9 @@ parse_listitem(Blob *out, char type, bool *ploose, const char *text, size_t size
   }
 
   /* item is now in temp blob; process blocks and inlines: */
-  BlockInfo info;
-  info.unwrapped = !*ploose;
-
-  if (too_deep(parser)) { /* do not parse, just render as text */ }
-  else {
-    Blob *inner = blob_get(parser);
-    parse_blocks(inner, blob_str(temp), blob_len(temp), parser, &info);
-    blob_put(parser, temp);
-    temp = inner;
-  }
-
-  if (parser->render.listitem) {
-    int tightstart = !info.is_block_first;
-    int tightend = !info.is_block_last;
-    parser->render.listitem(out, tightstart, tightend, temp, parser->udata);
-  }
+  blob_add(out, temp);
 
   blob_put(parser, temp);
-
   return j;
 }
 
@@ -1973,22 +1994,52 @@ parse_listitem(Blob *out, char type, bool *ploose, const char *text, size_t size
 static size_t
 parse_list(Blob *out, char type, int start, const char *text, size_t size, Parser *parser)
 {
-  Blob *temp = blob_get(parser);
-  size_t j, len;
+  size_t i, j, len, numitems;
+  Blob *temp, *items;
+  BlockInfo info;
   bool loose = false;
 
-  // TODO collect items into individual blobs and only at the end,
-  //      when loose/tight is known, finalize items and emit list
-
-  /* list is sequence of list items of the same type: */
+  /* Step 1: parse all the list's items, determine tight or loose */
+  items = blob_get(parser);
   for (j = 0; j < size; j += len) {
-    len = parse_listitem(temp, type, &loose, text+j, size-j, parser);
-    if (!len) break;
+    Blob *item = blob_get(parser);
+    len = parse_listitem(item, type, &loose, text+j, size-j, parser);
+    if (len) blob_addbuf(items, (const char *)&item, sizeof(item));
+    else { blob_put(parser, item); break; }
   }
 
+  /* Step 2: render each item (tight or loose) */
+  info.unwrapped = !loose;
+  temp = blob_get(parser);
+  numitems = blob_len(items)/sizeof(Blob*);
+  for (i = 0; i < numitems; i++) {
+    Blob *item = ((Blob**)blob_buf(items))[i];
+    if (parser->render.listitem) {
+      if (too_deep(parser)) {
+        parser->render.listitem(temp, !loose, !loose, item, parser->udata);
+      }
+      else {
+        Blob *inner = blob_get(parser);
+        parse_blocks(inner, blob_str(item), blob_len(item), parser, &info);
+        int tightstart = !info.is_block_first;
+        int tightend = !info.is_block_last;
+        parser->render.listitem(temp, tightstart, tightend, inner, parser->udata);
+        blob_put(parser, inner);
+      }
+    }
+    else blob_add(temp, item);
+  }
+
+  /* Step 3: render the list from its rendered items */
   if (parser->render.list)
     parser->render.list(out, type, start, temp, parser->udata);
+
+  /* Step 4: release memory */
   blob_put(parser, temp);
+  for (i = 0; i < numitems; i++)
+    blob_put(parser, ((Blob**)blob_buf(items))[i]);
+  blob_put(parser, items);
+
   return j;
 }
 
@@ -2219,11 +2270,9 @@ parse_blocks(Blob *out, const char *text, size_t size, Parser *parser, BlockInfo
     // TODO table lines
     else if ((len = is_linkdef(ptr, end, 0, 0, 0))) {
       /* nothing to do, just skip it */
-      isblock = false;
     }
     else if ((len = is_blankline(ptr, end))) {
       /* nothing to do, blank lines separate blocks */
-      isblock = false;
     }
     else {
       /* Non-blank lines that cannot be interpreted otherwise
