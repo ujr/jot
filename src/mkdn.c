@@ -867,132 +867,114 @@ emit_codespan(Blob *out, const char *text, size_t size)
 /* === tree of inline spans === */
 
 
-typedef struct span Span;
-typedef struct spantree SpanTree;
-
-// TODO alloc each span and use pointers instead of indexes (easier to read)
-
-struct span {
+typedef struct span {
   char type;            /* emph or link or ... */
   size_t olen, clen;    /* delimiter length (open and close) */
   size_t ofs, len;      /* stretch of text span */
-  size_t down, next;    /* tree linkage */
+  struct span *down;    /* first child */
+  struct span *next;    /* next sibling */
   Slice href, title;    /* payload for links */
-};
+} Span;
 
-struct spantree {
-  Blob *blob;           /* node storage */
-};
+typedef struct spantree {
+  MemPool pool;         /* node storage */
+  Span *root;
+} SpanTree;
 
 #define SPAN_SPANS(tree) (blob_buf(tree->blob))
 #define SPAN_COUNT(tree) (blob_len(tree->blob)/sizeof(struct span))
 
 #if 0
 static void
-dump_spans(SpanTree *tree)
+dump_spans(Span *node, int indent)
 {
-  size_t i;
-  size_t n = blob_len(tree->blob)/sizeof(struct span) - 1;
-  struct span *spans = blob_buf(tree->blob);
-  for (i = 1; i <= n; i++) {
-    fprintf(stderr, "%2zu: '%c' ofs=%zu len=%zu, %zu+%zu, down=%zu, next=%zu\n",
-      i, spans[i].type, spans[i].ofs, spans[i].len,
-      spans[i].olen, spans[i].clen, spans[i].down, spans[i].next);
-  }
+  int i;
+  if (!node) return;
+  for (i = 0; i < indent; i++)
+    fprintf(stderr, "  ");
+  fprintf(stderr, "'%c' ofs=%zu len=%zu, %zu+%zu\n",
+    node->type, node->ofs, node->len, node->olen, node->clen);
+  dump_spans(node->down, indent+1);
+  dump_spans(node->next, indent);
 }
 #endif
 
 /** make span tree; add root span; all spans must be inside root */
 static void
-initspans(SpanTree *tree, size_t ofs, size_t len, Parser *parser)
+initspans(SpanTree *tree, size_t ofs, size_t len)
 {
-  struct span *span;
-  tree->blob = blob_get(parser);
-  assert(blob_len(tree->blob) == 0);
-
-  /* span at index 0 is never used: */
-  span = blob_prepare(tree->blob, sizeof(*span));
-  memset(span, 0, sizeof(*span));
-  blob_addlen(tree->blob, sizeof(*span));
-
-  /* span at index 1 is the root: */
-  span = blob_prepare(tree->blob, sizeof(*span));
+  Span *span;
+  mem_pool_init(&tree->pool, 40*sizeof(Span));
+  span = mem_pool_alloc(&tree->pool, sizeof(*span));
   memset(span, 0, sizeof(*span));
   span->type = 'R';
   span->ofs = ofs;
   span->len = len;
-  blob_addlen(tree->blob, sizeof(*span));
+  tree->root = span;
 }
 
 static void
-freespans(SpanTree *tree, Parser *parser)
+freespans(SpanTree *tree)
 {
-  blob_put(parser, tree->blob);
+  tree->root = 0;
+  mem_pool_free(&tree->pool);
 }
 
 static bool
-span_contains(struct span *spans, size_t i, size_t j)
+span_contains(Span *a, Span *b)
 {
-  size_t test = spans[j].ofs;
-  return i && spans[i].ofs <= test && test < spans[i].ofs+spans[i].len;
+  size_t test = b->ofs;
+  return a && a->ofs <= test && test < a->ofs+a->len;
 }
 
 static bool
-span_before(struct span *spans, size_t i, size_t j)
+span_before(Span *a, Span *b)
 {
-  return i && spans[i].ofs + spans[i].len <= spans[j].ofs;
+  return a && a->ofs + a->len <= b->ofs;
 }
 
 static struct span *
 addspan(SpanTree *tree, char type, size_t ofs, size_t len, size_t olen, size_t clen)
 {
-  size_t count, cur, new, parent, left;
-  struct span *span, *spans;
-  static const size_t root = 1;
+  Span *new, *cur, *parent, *left, *tail;
 
-  span = blob_prepare(tree->blob, sizeof(*span));
-  memset(span, 0, sizeof(*span));
-  span->type = type;
-  span->ofs = ofs;
-  span->len = len;
-  span->olen = olen;
-  span->clen = clen;
-  span->down = span->next = 0;
-  blob_addlen(tree->blob, sizeof(*span));
+  new = mem_pool_alloc(&tree->pool, sizeof(*new));
+  memset(new, 0, sizeof(*new));
+  new->type = type;
+  new->ofs = ofs;
+  new->len = len;
+  new->olen = olen;
+  new->clen = clen;
+  new->down = new->next = 0;
 
-  spans = SPAN_SPANS(tree);
-  count = SPAN_COUNT(tree);
-
-  cur = root;
-  new = count-1;  /* the new span */
   parent = left = 0;
+  cur = tree->root;
   while (cur) {
-    if (span_contains(spans, cur, new)) { parent = cur; left = 0; cur = spans[cur].down; }
-    else if (span_before(spans, cur, new)) { left = cur; cur = spans[cur].next; }
+    if (span_contains(cur, new)) { parent = cur; left = 0; cur = cur->down; }
+    else if (span_before(cur, new)) { left = cur; cur = cur->next; }
     else break;
   }
   assert(parent != 0);  /* if not, the root is wrong */
-  size_t tail;
   if (left) {
-    tail = spans[left].next;
-    spans[left].next = new;
+    tail = left->next;
+    left->next = new;
   }
   else { /* first child */
-    tail = spans[parent].down;
-    spans[parent].down = new;
+    tail = parent->down;
+    parent->down = new;
   }
   /* split tail into part inside new & part right of new: */
-  if (tail && span_contains(spans, new, tail)) {
-    spans[new].down = tail;
-    while (spans[tail].next && span_contains(spans, new, spans[tail].next))
-      tail = spans[tail].next;
+  if (tail && span_contains(new, tail)) {
+    new->down = tail;
+    while (tail->next && span_contains(new, tail->next))
+      tail = tail->next;
     assert(tail != 0);
-    spans[new].next = spans[tail].next;
-    spans[tail].next = 0;
+    new->next = tail->next;
+    tail->next = 0;
   }
-  else spans[new].next = tail;
+  else new->next = tail;
 
-  return span;
+  return new;
 }
 
 /* Here we build the span tree as we add spans.
@@ -1019,49 +1001,48 @@ addspan(SpanTree *tree, char type, size_t ofs, size_t len, size_t olen, size_t c
 
 
 static void
-emit_spans(Blob *out, const char *text, SpanTree *tree, size_t span, Parser *parser);
+emit_spans(Blob *out, const char *text, Span *span, Parser *parser);
 
 
 static void
-emit_plain(Blob *out, const char *text, SpanTree *tree, size_t span, Parser *parser)
+emit_plain(Blob *out, const char *text, Span *span, Parser *parser)
 {
-  size_t child;
-  struct span *spans = SPAN_SPANS(tree);
-  size_t ofs = spans[span].ofs + spans[span].olen;
-  size_t end = spans[span].ofs + spans[span].len - spans[span].clen;
+  Span *child;
+  size_t ofs = span->ofs + span->olen;
+  size_t end = span->ofs + span->len - span->clen;
   char type;
 
   if (too_deep(parser)) {
-    emit_text(out, text+spans[span].ofs, spans[span].len, parser);
+    emit_text(out, text+span->ofs, span->len, parser);
     return;
   }
 
-  for (child = spans[span].down; child; child = spans[child].next) {
-    if (ofs < spans[child].ofs)
-      emit_text(out, text+ofs, spans[child].ofs-ofs, parser);
+  for (child = span->down; child; child = child->next) {
+    if (ofs < child->ofs)
+      emit_text(out, text+ofs, child->ofs-ofs, parser);
 
-    type = spans[child].type;
+    type = child->type;
     if (strchr(parser->emphchars, type)) {
       Blob *temp = blob_get(parser);
-      emit_plain(temp, text, tree, child, parser);
+      emit_plain(temp, text, child, parser);
       emit_text(out, blob_str(temp), blob_len(temp), parser);
       blob_put(parser, temp);
     }
     else if (type == '[' || type == '!') {
-      emit_plain(out, text, tree, child, parser);
+      emit_plain(out, text, child, parser);
     }
     else if (type == '`') {
-      size_t ofs = spans[child].ofs + spans[child].olen;
-      size_t len = spans[child].len - spans[child].olen - spans[child].clen;
+      size_t ofs = child->ofs + child->olen;
+      size_t len = child->len - child->olen - child->clen;
       emit_text(out, text+ofs, len, parser);
     }
     else {
-      size_t ofs = spans[child].ofs;
-      size_t len = spans[child].len;
+      size_t ofs = child->ofs;
+      size_t len = child->len;
       emit_text(out, text+ofs, len, parser);
     }
 
-    ofs = spans[child].ofs + spans[child].len;
+    ofs = child->ofs + child->len;
   }
   if (ofs < end) {
     emit_text(out, text+ofs, end-ofs, parser);
@@ -1070,22 +1051,21 @@ emit_plain(Blob *out, const char *text, SpanTree *tree, size_t span, Parser *par
 
 
 static void
-emit_span(Blob *out, const char *text, SpanTree *tree, size_t span, Parser *parser)
+emit_span(Blob *out, const char *text, Span *span, Parser *parser)
 {
   bool done = false;
-  struct span *spans = SPAN_SPANS(tree);
-  char type = spans[span].type;
+  char type = span->type;
 
   if (too_deep(parser)) {
-    emit_text(out, text+spans[span].ofs, spans[span].len, parser);
+    emit_text(out, text+span->ofs, span->len, parser);
     return;
   }
 
   if (strchr(parser->emphchars, type) && parser->render.emphasis) {
     Blob *temp = blob_get(parser);
-    char c = spans[span].type;
-    int n = spans[span].olen;
-    emit_spans(temp, text, tree, span, parser);  /* nested spans */
+    char c = span->type;
+    int n = span->olen;
+    emit_spans(temp, text, span, parser);  /* nested spans */
     done = parser->render.emphasis(out, c, n, temp, parser->udata);
     blob_put(parser, temp);
   }
@@ -1094,12 +1074,12 @@ emit_span(Blob *out, const char *text, SpanTree *tree, size_t span, Parser *pars
     Blob *body = blob_get(parser);
     Blob *link = blob_get(parser);
     Blob *title = blob_get(parser);
-    Slice linkslice = spans[span].href;
-    Slice titleslice = spans[span].title;
+    Slice linkslice = span->href;
+    Slice titleslice = span->title;
     if (type == '!')
-      emit_plain(body, text, tree, span, parser);  /* unmark nested spans */
+      emit_plain(body, text, span, parser);  /* unmark nested spans */
     else
-      emit_spans(body, text, tree, span, parser);  /* render nested spans */
+      emit_spans(body, text, span, parser);  /* render nested spans */
     emit_url(link, linkslice.s, linkslice.n, parser);
     emit_text(title, titleslice.s, titleslice.n, parser);
     done = type == '!'
@@ -1111,45 +1091,43 @@ emit_span(Blob *out, const char *text, SpanTree *tree, size_t span, Parser *pars
   }
   else if (type == '`' && parser->render.codespan) {
     Blob *temp = blob_get(parser);
-    size_t ofs = spans[span].ofs + spans[span].olen;
-    size_t len = spans[span].len - spans[span].olen - spans[span].clen;
+    size_t ofs = span->ofs + span->olen;
+    size_t len = span->len - span->olen - span->clen;
     emit_codespan(temp, text+ofs, len);
     done = parser->render.codespan(out, temp, parser->udata);
     blob_put(parser, temp);
   }
   else if ((type == '@' || type == ':') && parser->render.autolink) {
-    size_t ofs = spans[span].ofs+1;
-    size_t len = spans[span].len-2;
+    size_t ofs = span->ofs+1;
+    size_t len = span->len-2;
     done = parser->render.autolink(out, type, text+ofs, len, parser->udata);
   }
   else if (type == '<' && parser->render.htmltag) {
-    size_t ofs = spans[span].ofs;
-    size_t len = spans[span].len;
+    size_t ofs = span->ofs;
+    size_t len = span->len;
     done = parser->render.htmltag(out, text+ofs, len, parser->udata);
   }
 
   if (!done)  /* if not processed, emit as plain text */
-    emit_text(out, text+spans[span].ofs, spans[span].len, parser);
+    emit_text(out, text+span->ofs, span->len, parser);
 }
 
 
 static void
-emit_spans(Blob *out, const char *text, SpanTree *tree, size_t span, Parser *parser)
+emit_spans(Blob *out, const char *text, Span *span, Parser *parser)
 {
-  size_t child;
-  struct span *spans = SPAN_SPANS(tree);
-  size_t ofs = spans[span].ofs + spans[span].olen;
-  size_t end = spans[span].ofs + spans[span].len - spans[span].clen;
+  Span *child;
+  size_t ofs = span->ofs + span->olen;
+  size_t end = span->ofs + span->len - span->clen;
 
-  for (child = spans[span].down; child; child = spans[child].next) {
-    if (ofs < spans[child].ofs)
-      emit_text(out, text+ofs, spans[child].ofs-ofs, parser);
-    emit_span(out, text, tree, child, parser);
-    ofs = spans[child].ofs + spans[child].len;
+  for (child = span->down; child; child = child->next) {
+    if (ofs < child->ofs)
+      emit_text(out, text+ofs, child->ofs - ofs, parser);
+    emit_span(out, text, child, parser);
+    ofs = child->ofs + child->len;
   }
-  if (ofs < end) {
+  if (ofs < end)
     emit_text(out, text+ofs, end-ofs, parser);
-  }
 }
 
 
@@ -1391,7 +1369,7 @@ parse_inlines(Blob *out, const char *text, size_t size, Parser *parser)
   size_t i, j, len;
 
   /* create span tree, add root */
-  initspans(&tree, 0, size, parser);
+  initspans(&tree, 0, size);
 
   /* add all delimiter runs to a doubly linked list */
   for (j = 0; j < size; ) {
@@ -1453,10 +1431,10 @@ parse_inlines(Blob *out, const char *text, size_t size, Parser *parser)
 
   free_delims(&delims);
 
-//  dump_spans(&tree);
-  emit_spans(out, text, &tree, 1, parser);
+  //dump_spans(tree.root, 0);
+  emit_spans(out, text, tree.root, parser);
 
-  freespans(&tree, parser);
+  freespans(&tree);
 }
 
 
