@@ -9,7 +9,7 @@
 #include "blob.h"
 #include "log.h"
 #include "memory.h"
-#include "mkdn.h"
+#include "markdown.h"
 
 
 /* Markdown has block elements and inline (span) elements.

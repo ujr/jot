@@ -15,7 +15,7 @@
 #include "log.h"
 #include "blob.h"
 #include "cmdargs.h"
-#include "mkdn.h"
+#include "markdown.h"
 
 static void fatal(void);
 #define BUF_ABORT fatal();

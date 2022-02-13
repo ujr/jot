@@ -21,7 +21,7 @@
 #include "jotlib.h"
 #include "log.h"
 #include "blob.h"
-#include "mkdn.h"
+#include "markdown.h"
 #include "pikchr.h"
 #include "utils.h"
 #include "walkdir.h"

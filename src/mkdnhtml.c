@@ -24,7 +24,7 @@
 #include <string.h>
 
 #include "blob.h"
-#include "mkdn.h"
+#include "markdown.h"
 #include "pikchr.h"
 
 
