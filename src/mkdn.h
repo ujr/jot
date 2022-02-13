@@ -40,8 +40,8 @@ struct markdown {
 };
 
 
-void markdown(Blob *out, const char *txt, size_t len, struct markdown *mkdn, int debug);
+void markdown(Blob *out, const char *txt, size_t len, struct markdown *mkdn);
 
-void mkdnhtml(Blob *out, const char *txt, size_t len, const char *wrap, int pretty, int debug);
+void mkdnhtml(Blob *out, const char *txt, size_t len, const char *wrap, int pretty);
 
 #endif

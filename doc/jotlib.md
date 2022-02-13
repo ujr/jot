@@ -22,7 +22,8 @@ pikchr(str, opts)    -- render Pikchr in str to SVG
 The **Markdown** renderer aims to be largely but not entirely
 conformant to [CommonMark](https://spec.commonmark.org). If new to
 Markdown, read a [Markdown tutorial](https://commonmark.org/help).
-Options: TODO
+Options: a number; 0 is for default rendering, 256 requests
+rendering as in the CommonMark samples/tests.
 
 **Pikchr** is a new implementation of Kernighan's PIC language
 by the SQLite author D. Richard Hipp. To include Pikchr in

@@ -83,9 +83,7 @@ typedef size_t (*CharProc)(
 struct parser {
   struct markdown render;
   void *udata;
-  int debug;
   int nesting_depth;         /* to limit recursion depth */
-  int in_link;               /* to inhibit links within links */
   Blob linkdefs;             /* collected link definitions */
   Blob *blob_pool[100];
   size_t pool_index;
@@ -2276,16 +2274,14 @@ parse_blocks(Blob *out, const char *text, size_t size, Parser *parser, BlockInfo
 
 
 static void
-init(Parser *parser, struct markdown *mkdn, int debug)
+init(Parser *parser, struct markdown *mkdn)
 {
   assert(parser != 0);
   assert(mkdn != 0);
 
   parser->render = *mkdn;
   parser->udata = mkdn->udata;
-  parser->debug = debug < 1 ? 0 : debug;
   parser->nesting_depth = 0;
-  parser->in_link = 0;
   parser->linkdefs = (Blob) BLOB_INIT;
 
   memset(parser->blob_pool, 0, sizeof(parser->blob_pool));
@@ -2321,7 +2317,7 @@ init(Parser *parser, struct markdown *mkdn, int debug)
 
 
 PUBLIC void
-markdown(Blob *out, const char *text, size_t size, struct markdown *mkdn, int debug)
+markdown(Blob *out, const char *text, size_t size, struct markdown *mkdn)
 {
   size_t start;
   Parser parser;
@@ -2330,7 +2326,7 @@ markdown(Blob *out, const char *text, size_t size, struct markdown *mkdn, int de
   if (!text || !size || !mkdn) return;
   assert(out != NULL);
 
-  init(&parser, mkdn, debug);
+  init(&parser, mkdn);
   mem_pool_init(&pool, 2000);
 
   /* 1st pass: collect references */
@@ -2393,7 +2389,6 @@ main(int argc, char **argv)
   Blob output = BLOB_INIT;
   char buf[2048];
   size_t n;
-  const int debug = 1;
 
   if (argc > 1) {
     FILE *fp = fopen(argv[1], "r");
@@ -2409,7 +2404,7 @@ main(int argc, char **argv)
     }
   }
 
-  mkdnhtml(&output, blob_str(&input), blob_len(&input), 0, 256, debug);
+  mkdnhtml(&output, blob_str(&input), blob_len(&input), 0, 256);
 
   fputs(blob_str(&output), stdout);
   fflush(stdout);

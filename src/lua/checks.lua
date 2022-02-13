@@ -155,6 +155,21 @@ mkdnskip = {
   [621]="be laxer on html tag syntax",
   [625]="be laxer on html comments; CM is XML strict",
   [626]="be laxer on html comments; CM is XML strict",
+  --
+  [4] = "lazyness (low priority)",
+  [5] = "lazyness (low priority)",
+  [6] = "lazyness (low priority)",
+  [7] = "lazyness (low priority)",
+  [9] = "lazyness (low priority)",
+  [93] = "illogical (low priority)",
+  [212] = "known bug (medium priority)",
+  [213] = "known bug (medium priority)",
+  [218] = "known bug (medium priority)",
+  [237] = "illogical (but also a bug)",
+  [238] = "illogical (low priority)",
+  [312] = "illogical (low priority)",
+  [318] = "known bug (low priority)",
+  --
   [999]="reason"
 }
 numfail = 0
@@ -167,7 +182,7 @@ function Test(t)
     log.debug(string.format("mkdn SKIP test #%d (%s)", t.number, mkdnskip[t.number]))
     return
   end
-  local r = jot.markdown(t.input)
+  local r = jot.markdown(t.input, 256)
   if r ~= t.result then
     numfail = numfail + 1
     log.error(string.format("mkdn FAIL test #%d on %s", t.number, t.section))

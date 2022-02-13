@@ -4,11 +4,15 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-bool streq(const char *s, const char *t);
-char *strcopy(const char *s);
-int strnicmp(const char *s, const char *t, size_t n);
 const char *basename(const char *path);
+bool streq(const char *s, const char *t);
 
+/* implementations of common functions not in ANSI C */
+char *strcopy(const char *s);
+size_t strlenmax(const char *s, size_t maxlen);
+int strnicmp(const char *s, const char *t, size_t n);
+
+/* <ctype.h> alternatives that ignore locale / assume UTF-8 */
 int isSpace(int c);
 int isDigit(int c);
 int isLower(int c);

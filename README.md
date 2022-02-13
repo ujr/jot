@@ -10,7 +10,8 @@ one more does no harm.
     jot new <path>        create initial site structure
     jot build [path]      build or rebuild site in path (or .)
     jot render [file]     render file (or stdin) to stdout
-    jot pikchr [file]     run pikchr on file (or stdin)
+    jot markdown [file]   process Markdown to HTML on stdout
+    jot pikchr [file]     process Pikchr to SVG on stdout
     jot checks            run self checks (built-in unit tests)
     jot help              show available commands and options
 
@@ -20,7 +21,11 @@ Inspired by [Jekyll][jekyll] and [Hugo][hugo], but aiming to be
 much simpler, more lightweight, and free of large dependencies.
 Using [Lua][lua] for scripting and [mustache][mustache] (or
 something similarly simple) for templates. Will provide support
-for [pikchr][pikchr] (Pic-like inline graphics).
+for [Markdown][] and [Pikchr][] (PIC-like inline graphics).
+
+A number of functions will be made available to Lua for
+internal implementation, some also for user scripting;
+see [jotlib.md](doc/jotlib.md) for details.
 
 ## Notes
 
@@ -38,4 +43,5 @@ Lustache is copyright © 2012 Olivine Labs. MIT License.
 [hugo]: https://gohugo.io/
 [lua]: https://www.lua.org/
 [mustache]: https://mustache.github.io/
-[pikchr]: https://pikchr.org/
+[Markdown]: https://commonmark.org/
+[Pikchr]: https://pikchr.org/

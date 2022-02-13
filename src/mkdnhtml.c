@@ -48,14 +48,14 @@ struct html {
   const char *wrapperclass;
   bool cmout;  /* output as in CommonMark tests */
   int pretty;  /* prettiness; 0=dense, 1=looser, ... */
-  int debug;   /* tentative */
 };
 
 
 static bool _initialized = false;
 
 
-/* HTML5 entities -- ONLY the subset needed to pass the CommonMark tests.
+/* HTML5 entities -- a subset needed to pass the CommonMark tests and
+   common German (umlauts) and French (acute, grave, circonflex) stuff.
    See https://html.spec.whatwg.org/entities.json for a complete list.
    You may add entities. Before use, sort the list with entitysort(). */
 static struct entity {
@@ -64,21 +64,69 @@ static struct entity {
   unsigned int code1;
   unsigned int code2;
 } entities[] = {
-  { "auml",                      4,  228,   0 },
-  { "ouml",                      4,  246,   0 },
-  { "nbsp",                      4,  160,   0 },
-  { "copy",                      4,  169,   0 },
-  { "AElig",                     5,  198,   0 },
-  { "Dcaron",                    6,  270,   0 },
-  { "frac34",                    6,  190,   0 },
-  { "HilbertSpace",             12, 8459,   0 },
-  { "DifferentialD",            13, 8518,   0 },
-  { "ClockwiseContourIntegral", 24, 8754,   0 },
-  { "ngE",                       3, 8807, 824 },
-  { "lt",                        2,   60,   0 },
-  { "gt",                        2,   62,   0 },
-  { "quot",                      4,   34,   0 },
-  { "amp",                       3,   38,   0 },
+  { "quot",                      4,    0x22,    0 },
+  { "amp",                       3,    0x26,    0 },
+  { "apos",                      4,    0x27,    0 },
+  { "lt",                        2,    0x3C,    0 },
+  { "gt",                        2,    0x3E,    0 },
+  /* Umlauts and German sz ligature: */
+  { "Auml",                      4,    0xC4,    0 },
+  { "Euml",                      4,    0xCB,    0 },
+  { "Iuml",                      4,    0xEF,    0 },
+  { "Ouml",                      4,    0xD6,    0 },
+  { "Uuml",                      4,    0xDC,    0 },
+  { "szlig",                     5,    0xDF,    0 },
+  { "auml",                      4,    0xE4,    0 },
+  { "euml",                      4,    0xEB,    0 },
+  { "iuml",                      4,    0xEF,    0 },
+  { "ouml",                      4,    0xF6,    0 },
+  { "uuml",                      4,    0xFC,    0 },
+  /* Common latin ligatures: */
+  { "AElig",                     5,    0xC6,    0 },
+  { "aelig",                     5,    0xE6,    0 },
+  { "OElig",                     5,  0x0152,    0 },
+  { "oelig",                     5,  0x0153,    0 },
+  /* More accented latin characters: */
+  { "Ccedil",                    6,    0xC7,    0 },
+  { "ccedil",                    6,    0xE7,    0 },
+  { "Eacute",                    6,    0xC9,    0 },
+  { "eacute",                    6,    0xE9,    0 },
+  { "acirc",                     5,    0xE2,    0 },
+  { "Acirc",                     5,    0xC2,    0 },
+  { "ecirc",                     5,    0xEA,    0 },
+  { "Ecirc",                     5,    0xCA,    0 },
+  { "icirc",                     5,    0xEE,    0 },
+  { "Icirc",                     5,    0xCE,    0 },
+  { "ocirc",                     5,    0xF4,    0 },
+  { "Ocirc",                     5,    0xD4,    0 },
+  { "ucirc",                     5,    0xFB,    0 },
+  { "Ucirc",                     5,    0xDB,    0 },
+  { "agrave",                    6,    0xE0,    0 },
+  { "Agrave",                    6,    0xC0,    0 },
+  { "egrave",                    6,    0xE8,    0 },
+  { "Egrave",                    6,    0xC8,    0 },
+  { "igrave",                    6,    0xEC,    0 },
+  { "Igrave",                    6,    0xCC,    0 },
+  { "ograve",                    6,    0xF2,    0 },
+  { "Ograve",                    6,    0xD2,    0 },
+  { "ugrave",                    6,    0xF9,    0 },
+  { "Ugrave",                    6,    0xD9,    0 },
+  /* Spaces, dashes, bullets: */
+  { "ndash",                     5,    8211,    0 },
+  { "mdash",                     5,    8212,    0 },
+  { "nbsp",                      4,     160,    0 },
+  { "ensp",                      4,    8194,    0 },
+  { "emsp",                      4,    8195,    0 },
+  { "shy",                       3,     173,    0 },  /* soft hyphen */
+  { "bull",                      4,    8226,    0 },  /* bullet */
+  /* Some more to pass the CommonMark tests: */
+  { "copy",                      4,     169,    0 },
+  { "frac34",                    6,     190,    0 },
+  { "Dcaron",                    6,     270,    0 },
+  { "HilbertSpace",             12,    8459,    0 },
+  { "DifferentialD",            13,    8518,    0 },
+  { "ClockwiseContourIntegral", 24,    8754,    0 },
+  { "ngE",                       3,    8807,  824 },
   { 0, 0, 0, 0 }
 };
 
@@ -472,6 +520,7 @@ html_emphasis(Blob *out, char c, int n, Blob *text, void *udata)
   UNUSED(udata);
 
   if (c != '*' && c != '_') return false;
+  // TODO could support others like ~~foo~~ for <del>foo</del>
 
   if (n == 1) {
     BLOB_ADDLIT(out, "<em>");
@@ -638,7 +687,7 @@ html_text(Blob *out, const char *text, size_t size, void *udata)
 
 
 void
-mkdnhtml(Blob *out, const char *txt, size_t len, const char *wrap, int pretty, int debug)
+mkdnhtml(Blob *out, const char *txt, size_t len, const char *wrap, int pretty)
 {
   struct markdown rndr;
   struct html opts;
@@ -661,7 +710,6 @@ mkdnhtml(Blob *out, const char *txt, size_t len, const char *wrap, int pretty, i
   }
   opts.pretty = pretty & 255;
   opts.cmout = !!(pretty & 256);
-  opts.debug = debug;
 
   rndr.heading = html_heading;
   rndr.paragraph = html_paragraph;
@@ -683,5 +731,5 @@ mkdnhtml(Blob *out, const char *txt, size_t len, const char *wrap, int pretty, i
   rndr.entity = html_entity;
   rndr.text = html_text;
 
-  markdown(out, txt, len, &rndr, debug);
+  markdown(out, txt, len, &rndr);
 }

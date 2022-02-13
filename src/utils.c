@@ -6,41 +6,6 @@
 #include "utils.h"
 
 
-/** convenience around strcmp(3) */
-bool
-streq(const char *s, const char *t)
-{
-  if (!s && !t) return true;
-  if (!s || !t) return false;
-  return strcmp(s, t) == 0;
-}
-
-
-/** strdup(s), which is not in ANSI C */
-char *
-strcopy(const char *s)
-{
-  if (!s) return 0;
-  size_t l = strlen(s);
-  char *t = malloc(l+1);
-  if (!t) return 0;
-  return memcpy(t, s, l+1);
-}
-
-
-/** strncasecmp(3), which is not in ANSI C */
-int
-strnicmp(const char *s, const char *t, size_t n)
-{
-  if (n==0) return 0;
-  n--; /* do last comparison after the loop */
-  while (n && *s && *t && (*s == *t || toLower(*s) == toLower(*t))) {
-    s++; t++; n--;
-  }
-  return toLower(*s) - toLower(*t);
-}
-
-
 /** pointer to basename portion of given path;
  * assume an implicit separator just before given path;
  * unlike POSIX, the result may be the empty string;
@@ -67,6 +32,50 @@ basename(const char *path)
   }
 
   return path;
+}
+
+
+/** convenience around strcmp(3) */
+bool
+streq(const char *s, const char *t)
+{
+  if (!s && !t) return true;
+  if (!s || !t) return false;
+  return strcmp(s, t) == 0;
+}
+
+
+/** strdup(s), which is not in ANSI C */
+char *
+strcopy(const char *s)
+{
+  if (!s) return 0;
+  size_t l = strlen(s);
+  char *t = malloc(l+1);
+  if (!t) return 0;
+  return memcpy(t, s, l+1);
+}
+
+
+/** strncasecmp(3), which is not in ANSI C */
+int
+strnicmp(const char *s, const char *t, size_t n)
+{
+  if (n == 0) return 0;
+  n--; /* do last comparison after the loop */
+  while (n && *s && *t && (*s == *t || toLower(*s) == toLower(*t))) {
+    s++; t++; n--;
+  }
+  return toLower(*s) - toLower(*t);
+}
+
+
+/** strnlen(s,n), which is not in ANSI C */
+size_t
+strlenmax(const char *s, size_t maxlen)
+{
+  const char *p = memchr(s, 0, maxlen);
+  return p ? (size_t)(p - s) : maxlen;
 }
 
 

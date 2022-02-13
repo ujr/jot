@@ -13,7 +13,9 @@
 #include "jot.h"
 #include "jotlib.h"
 #include "log.h"
+#include "blob.h"
 #include "cmdargs.h"
+#include "mkdn.h"
 
 static void fatal(void);
 #define BUF_ABORT fatal();
@@ -39,14 +41,16 @@ fatal(void)
 }
 
 
-static void
+static bool
 get_exe_path(char *buf, int size)
 {
 #if __linux__
   char path[128];
   sprintf(path, "/proc/%d/exe", getpid());
   int len = readlink(path, buf, size - 1);
+  if (len < 0 || len > size-1) return false;
   buf[len] = '\0';
+  return true;
 #else
   #error "get_exe_path for non-Linux not implemented"
 #endif
@@ -88,27 +92,30 @@ usage(const char *fmt, ...)
     fprintf(fp, "Run %s with option -h for detailed usage.\n", me);
   else {
     fprintf(fp, "\nCommands:\n"
-    "  new <path>     create initial site structure in <path>\n"
-    "  build [path]   build or rebuild site in path (or .)\n"
-    "  render [file]  render file (or stdin) to stdout\n"
-    "  checks         run some self checks and quit\n"
-    "  trials         experimental code while in dev\n"
-    "  help           show this help text\n"
+    "  new <path>      create initial site structure in <path>\n"
+    "  build [path]    build or rebuild site in path (or .)\n"
+    "  render [file]   render file (or stdin) to stdout\n"
+    "  markdown [file] process Markdown to HTML on stdout\n"
+    "  pikchr [file]   process Pikchr to SVG on stdout\n"
+    "  checks          run some self checks and quit\n"
+    "  trials          experimental code while in dev\n"
+    "  help            show this help text\n"
     "\nGeneral options:\n"
-    "  -v             increase verbosity\n"
-    "  -q             quiet (log only errors)\n"
-    "  -x             allow unsafe functions (io.* etc.)\n"
-    "  -h             show this help and quit\n"
-    "  -V             show version and quit\n"
+    "  -v              increase verbosity\n"
+    "  -q              quiet (log only errors)\n"
+    "  -p num          flags for markdown/pikchr renderer\n"
+    "  -x              allow unsafe functions (io.* etc.)\n"
+    "  -h              show this help and quit\n"
+    "  -V              show version and quit\n"
     "\nBuild options:\n"
-    "  -c FILE        override config file location\n"
-    "  -s DIR         source: build from DIR (override config)\n"
-    "  -t DIR         target: build to DIR (override config)\n"
-    "  -d             build draft posts\n"
+    "  -c FILE         override config file location\n"
+    "  -s DIR          source: build from DIR (override config)\n"
+    "  -t DIR          target: build to DIR (override config)\n"
+    "  -d              build draft posts\n"
     "\nRender options:\n"
-    "  -i FILE.lua    load FILE.lua to init render env\n"
-    "  -p FILE.tmpl   make FILE.tmpl available as {{>FILE.tmpl}}\n"
-    "  -o FILE        render to FILE instead of stdout\n\n");
+    "  -i FILE.lua     load FILE.lua to init render env\n"
+    "  -p FILE.tmpl    make FILE.tmpl available as {{>FILE.tmpl}}\n"
+    "  -o FILE         render to FILE instead of stdout\n\n");
   }
 
   return fmt ? FAILHARD : SUCCESS;
@@ -297,7 +304,7 @@ render(lua_State *L, struct cmdargs *args)
   bool sandbox = true;
   int opt, r, top;
 
-  // jot render {-i luafile} {-p partial} [-o outfile] [file] [args]
+  /* jot render {-i luafile} {-p partial} [-o outfile] [file] [args] */
   while ((opt = cmdargs_getopt(args, "i:o:p:qvx")) >= 0) {
     switch (opt) {
       case 'o':
@@ -391,6 +398,68 @@ bail:
 
 
 static int
+render_markdown(lua_State *L, struct cmdargs *args)
+{
+  Blob input = BLOB_INIT;
+  Blob output = BLOB_INIT;
+  const char *infn;
+  char buf[2048];
+  size_t n;
+  int opt, pretty = 0;
+
+  UNUSED(L);
+
+  /* jot markdown [-p pretty] [file] */
+  while ((opt = cmdargs_getopt(args, "p:qv")) >= 0) {
+    switch (opt) {
+      case 'p':
+        pretty = atoi(args->optarg);
+        break;
+      case 'q':
+        verbosity = 0;
+        break;
+      case 'v':
+        verbosity += 1;
+        break;
+      case ':':
+        usage("option -%c requires an argument", args->optopt);
+        return FAILHARD;
+      case '?':
+        usage("invalid option: -%c", args->optopt);
+        return FAILHARD;
+    }
+  }
+
+  set_log_level(verbosity);
+
+  infn = cmdargs_getarg(args);
+
+  if (infn) {
+    FILE *fp = fopen(infn, "r");
+    if (!fp) { perror(infn); return FAILSOFT; }
+    while ((n = fread(buf, 1, sizeof(buf), fp)) > 0) {
+      blob_addbuf(&input, buf, n);
+    }
+    fclose(fp);
+  }
+  else {
+    while ((n = fread(buf, 1, sizeof(buf), stdin)) > 0) {
+      blob_addbuf(&input, buf, n);
+    }
+  }
+
+  mkdnhtml(&output, blob_str(&input), blob_len(&input), 0, pretty);
+
+  fputs(blob_str(&output), stdout);
+  fflush(stdout);
+
+  blob_free(&input);
+  blob_free(&output);
+  return SUCCESS;
+}
+
+
+static int
 checks(lua_State *L, struct cmdargs *args)
 {
   int opt;
@@ -478,7 +547,12 @@ main(int argc, char **argv)
     return FAILHARD;
   }
 
-  get_exe_path(exepath, sizeof(exepath));
+  if (!get_exe_path(exepath, sizeof(exepath))) {
+    if (errno)
+      log_panic("Cannot determine path of executable: %s", strerror(errno));
+    else log_panic("Cannot determine path of executable: cannot continue");
+    return FAILHARD;
+  }
 
   log_use_ansi(isatty(2));
   set_log_level(verbosity);
@@ -505,6 +579,9 @@ main(int argc, char **argv)
   else if (streq(cmd, "build")) {
     log_error("command not yet implemented: %s", cmd);
     r = FAILSOFT;
+  }
+  else if (streq(cmd, "markdown") || streq(cmd, "mkdn")) {
+    r = render_markdown(L, &args);
   }
   else if (streq(cmd, "help")) {
     r = usage(0);

@@ -11,7 +11,7 @@ JOTINC = jot.h jotlib.h log.h cmdargs.h pikchr.h wildmatch.h walkdir.h pathbuf.h
 all: jot
 
 check checks: jot
-	./jot checks || true  # avoid error message from make
+	./jot -v checks || true  # avoid error message from make
 
 jot: $(JOTSRC) $(JOTINC)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(JOTSRC) $(LDLIBS)
@@ -23,6 +23,6 @@ mkdn: mkdn.h mkdn.c mkdnhtml.c
 	$(CC) -Wall -Wextra -O0 -g -o $@ -DMKDN_SHELL mkdn.c mkdnhtml.c blob.c utils.c memory.c log.c pikchr.c -lm
 
 clean:
-	rm -f *.o jot pikchr
+	rm -f *.o jot mkdn pikchr
 
 .PHONY: clean
