@@ -5,8 +5,8 @@ local path = jot.path
 local log = jot.log
 
 
-log.info("Checking blob functions")
-assert(jot.checkblob(true))
+--log.info("Checking blob functions")
+--assert(jot.checkblob(true))
 
 
 log.info("Checking path.basename()")
@@ -144,6 +144,15 @@ assert(not jot.exists(dir))
 
 
 log.info("Checking Markdown rendering");
+mkdn = [[# Title
+Paragraph text with
+a [link](/url) to **nowhere**.]]
+html = jot.markdown(mkdn)
+assert(html == [[<h1>Title</h1>
+<p>Paragraph text with
+a <a href="/url">link</a> to <strong>nowhere</strong>.</p>
+]])
+
 mkdnskip = {
   [204]="leave precedence of duplicate link defs undefined",
   [206]="will not case-fold non-ASCII",
@@ -196,6 +205,13 @@ end
 env = { Test = Test }
 loadfile("../test/spec.lua", "t", env)()
 assert(numfail == 0, "Failed CommonMark test(s): " .. numfail)
+
+
+log.info("Checking Pikchr rendering")
+pik = [[line "Test"]]
+svg = jot.pikchr(pik)
+assert(svg:sub(1,5) == "<svg ")
+assert(svg:sub(-7) == "</svg>\n")
 
 
 log.info("OK");

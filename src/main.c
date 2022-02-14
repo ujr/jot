@@ -15,6 +15,7 @@
 #include "log.h"
 #include "blob.h"
 #include "cmdargs.h"
+#include "pikchr.h"
 #include "markdown.h"
 
 static void fatal(void);
@@ -295,6 +296,35 @@ setup_sandbox(lua_State *L)
 }
 
 
+/** read the named file into the given blob */
+static int
+readfile(const char *fn, Blob *blob)
+{
+  char buf[2048];
+  size_t n;
+  assert(blob != 0);
+
+  if (fn && !streq(fn, "-")) {
+    FILE *fp = fopen(fn, "r");
+    if (!fp) {
+      log_error("read file %s: %s", fn, strerror(errno));
+      return FAILSOFT;
+    }
+    while ((n = fread(buf, 1, sizeof(buf), fp)) > 0) {
+      blob_addbuf(blob, buf, n);
+    }
+    fclose(fp);
+  }
+  else {
+    while ((n = fread(buf, 1, sizeof(buf), stdin)) > 0) {
+      blob_addbuf(blob, buf, n);
+    }
+  }
+
+  return SUCCESS;
+}
+
+
 static int
 render(lua_State *L, struct cmdargs *args)
 {
@@ -403,59 +433,99 @@ render_markdown(lua_State *L, struct cmdargs *args)
   Blob input = BLOB_INIT;
   Blob output = BLOB_INIT;
   const char *infn;
-  char buf[2048];
-  size_t n;
   int opt, pretty = 0;
-
+  int r = SUCCESS;
   UNUSED(L);
 
   /* jot markdown [-p pretty] [file] */
   while ((opt = cmdargs_getopt(args, "p:qv")) >= 0) {
     switch (opt) {
-      case 'p':
-        pretty = atoi(args->optarg);
-        break;
-      case 'q':
-        verbosity = 0;
-        break;
-      case 'v':
-        verbosity += 1;
-        break;
-      case ':':
-        usage("option -%c requires an argument", args->optopt);
-        return FAILHARD;
-      case '?':
-        usage("invalid option: -%c", args->optopt);
-        return FAILHARD;
+      case 'p': pretty = atoi(args->optarg); break;
+      case 'q': verbosity = 0; break;
+      case 'v': verbosity += 1; break;
+      default:
+        return usage("invalid option: -%c", args->optopt);
     }
   }
 
   set_log_level(verbosity);
 
   infn = cmdargs_getarg(args);
+  if (cmdargs_getarg(args))
+    return usage("markdown: too many arguments");
 
-  if (infn) {
-    FILE *fp = fopen(infn, "r");
-    if (!fp) { perror(infn); return FAILSOFT; }
-    while ((n = fread(buf, 1, sizeof(buf), fp)) > 0) {
-      blob_addbuf(&input, buf, n);
-    }
-    fclose(fp);
-  }
-  else {
-    while ((n = fread(buf, 1, sizeof(buf), stdin)) > 0) {
-      blob_addbuf(&input, buf, n);
-    }
-  }
+  r = readfile(infn, &input);
+  if (r != SUCCESS) goto done;
+  if (!infn) infn = "(stdin)";
 
   mkdnhtml(&output, blob_str(&input), blob_len(&input), 0, pretty);
 
   fputs(blob_str(&output), stdout);
   fflush(stdout);
 
+done:
   blob_free(&input);
   blob_free(&output);
-  return SUCCESS;
+  return r;
+}
+
+
+static int
+render_pikchr(lua_State *L, struct cmdargs *args)
+{
+  const char *infn, *pik, *svg;
+  const char *class = "pikchr";
+  Blob input = BLOB_INIT;
+  int opt, w, h, pretty = 0;
+  int r = SUCCESS;
+  unsigned flags;
+  UNUSED(L);
+
+  while ((opt = cmdargs_getopt(args, "p:qv")) >= 0) {
+    switch (opt) {
+      case 'p': pretty = atoi(args->optarg); break;
+      case 'q': verbosity = 0; break;
+      case 'v': verbosity += 1; break;
+      default:
+        return usage("invalid option -%c", args->optopt);
+    }
+  }
+
+  set_log_level(verbosity);
+
+  infn = cmdargs_getarg(args);
+  if (cmdargs_getarg(args))
+    return usage("pikchr: too many arguments");
+
+  r = readfile(infn, &input);
+  if (r != SUCCESS) goto done;
+  if (!infn) infn = "(stdin)";
+
+  flags = PIKCHR_PLAINTEXT_ERRORS;
+  if (pretty & 1) flags |= PIKCHR_DARK_MODE;
+
+  pik = blob_str(&input);
+  svg = pikchr(pik, class, flags, &w, &h);
+
+  if (svg) {
+    if (w >= 0) {
+      log_debug("pikchr: w=%d h=%d", w, h);
+      fputs(svg, stdout);
+      fflush(stdout);
+    }
+    else log_error("pikchr error in %s:\n%s", infn, svg);
+
+    free((void*)svg);
+  }
+  else {
+    /* out of memory */
+    perror(infn);
+    r = FAILSOFT;
+  }
+
+done:
+  blob_free(&input);
+  return r;
 }
 
 
@@ -582,6 +652,9 @@ main(int argc, char **argv)
   }
   else if (streq(cmd, "markdown") || streq(cmd, "mkdn")) {
     r = render_markdown(L, &args);
+  }
+  else if (streq(cmd, "pikchr")) {
+    r = render_pikchr(L, &args);
   }
   else if (streq(cmd, "help")) {
     r = usage(0);

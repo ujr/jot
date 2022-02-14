@@ -30,7 +30,8 @@ by the SQLite author D. Richard Hipp. To include Pikchr in
 Markdown, use a fenced code block with an info string that
 reads `pikchr`. About the pikchr language, consult the
 [pikchr.org](https://pikchr.org) web page.
-Options: TODO
+Options: a number; 0 is for default rendering, 1 is for dark mode
+(meaning inverted colors).
 
 ## Logging
 

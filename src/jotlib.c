@@ -442,9 +442,8 @@ jot_pikchr(lua_State *L)
   s = luaL_checkstring(L, 1);
   darkmode = lua_toboolean(L, 2);
 
-  flags = 0;
+  flags = PIKCHR_PLAINTEXT_ERRORS;
   if (darkmode) flags |= PIKCHR_DARK_MODE;
-  flags |= PIKCHR_PLAINTEXT_ERRORS;
 
   t = pikchr(s, class, flags, &w, &h);
 
