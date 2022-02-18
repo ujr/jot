@@ -34,6 +34,7 @@ enum {
 #define log_panic(...) log_log(LOG_PANIC, __FILE__, __LINE__, __VA_ARGS__)
 
 void log_log(int level, const char *file, int line, const char *fmt, ...);
+int log_get_level(void);
 void log_set_level(int level);  /* all writers */
 void log_set_quiet(bool quiet); /* silence stderr only */
 void log_use_ansi(bool enable);

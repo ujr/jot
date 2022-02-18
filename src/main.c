@@ -225,25 +225,47 @@ setup_lua(lua_State *L, const char *exepath)
 }
 
 
+static const char *
+strip_where(lua_State *L, const char *msg, int level)
+{
+  /* Hack: Lua's error() prepends "file:line" to the message,
+     which is redundant to what our logging does; strip it */
+  const char *w;
+  size_t len;
+
+  luaL_where(L, level);
+  w = lua_tolstring(L, -1, &len);
+  lua_pop(L, 1);
+
+  if (strncmp(msg, w, len) == 0) {
+    msg += len;
+    while (*msg == ' ') msg++;
+  }
+
+  return msg;
+}
+
 /* Message handler: append a backtrace and log an error */
 static int
 msghandler(lua_State *L)
 {
+  const char *msg;
+  const int level = 2;
   const char *file = "?";
   int line = 0;
-  const int level = 2;
 
-  const char *err = lua_tostring(L, 1);
-  if (err) {
-    luaL_traceback(L, L, err, level);
-    err = luaL_checkstring(L, 2);
+  msg = lua_tostring(L, 1);
+  if (msg) {
+    msg = strip_where(L, msg, level);
+    luaL_traceback(L, L, msg, level);
+    msg = luaL_checkstring(L, 2);
   }
   else {
     /* error object is not a string: try convert via __tostring? */
     const char *tname = luaL_typename(L, 1);
-    err = lua_pushfstring(L, "(error object is a %s value)", tname);
-    luaL_traceback(L, L, err, level);
-    err = luaL_checkstring(L, 3);
+    msg = lua_pushfstring(L, "(error object is a %s value)", tname);
+    luaL_traceback(L, L, msg, level);
+    msg = luaL_checkstring(L, 3);
   }
 
   lua_Debug debug;
@@ -253,9 +275,12 @@ msghandler(lua_State *L)
       file = basename(debug.short_src);
       line = debug.currentline;
     }
+    if (debug.source && *debug.source != '@' && *debug.source != '=') {
+      file = "(built-in code)";
+    }
   }
 
-  log_log(LOG_ERROR, file, line, "%s", err);
+  log_log(LOG_ERROR, file, line, "%s", msg);
   return 1;
 }
 

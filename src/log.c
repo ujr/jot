@@ -94,6 +94,13 @@ write_stream(log_Event *evt)
 }
 
 
+int
+log_get_level(void)
+{
+  return Log.threshold;
+}
+
+
 void
 log_set_level(int level)
 {

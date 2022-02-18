@@ -21,6 +21,9 @@ logup(lua_State *L, int level)
       file = basename(debug.short_src);
       line = debug.currentline;
     }
+    if (debug.source && *debug.source != '@' && *debug.source != '=') {
+      file = "(built-in code)";
+    }
   }
 
   log_log(level, file, line, "%s", msg);
@@ -31,37 +34,43 @@ logup(lua_State *L, int level)
 static int
 f_trace(lua_State *L)
 {
-  return logup(L, LOG_TRACE);
+  int level = log_get_level();
+  return LOG_TRACE >= level ? logup(L, LOG_TRACE) : 0;
 }
 
 static int
 f_debug(lua_State *L)
 {
-  return logup(L, LOG_DEBUG);
+  int level = log_get_level();
+  return LOG_DEBUG >= level ? logup(L, LOG_DEBUG) : 0;
 }
 
 static int
 f_info(lua_State *L)
 {
-  return logup(L, LOG_INFO);
+  int level = log_get_level();
+  return LOG_INFO >= level ? logup(L, LOG_INFO) : 0;
 }
 
 static int
 f_warn(lua_State *L)
 {
-  return logup(L, LOG_WARN);
+  int level = log_get_level();
+  return LOG_WARN >= level ? logup(L, LOG_WARN) : 0;
 }
 
 static int
 f_error(lua_State *L)
 {
-  return logup(L, LOG_ERROR);
+  int level = log_get_level();
+  return LOG_ERROR >= level ? logup(L, LOG_ERROR) : 0;
 }
 
 static int
 f_panic(lua_State *L)
 {
-  return logup(L, LOG_PANIC);
+  int level = log_get_level();
+  return LOG_PANIC >= level ? logup(L, LOG_PANIC) : 0;
 }
 
 
