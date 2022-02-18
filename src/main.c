@@ -245,6 +245,7 @@ strip_where(lua_State *L, const char *msg, int level)
   return msg;
 }
 
+
 /* Message handler: append a backtrace and log an error */
 static int
 msghandler(lua_State *L)
@@ -285,27 +286,44 @@ msghandler(lua_State *L)
 }
 
 
+/* run the code in the given Lua file (file name only, no dir, no ext) */
 static int
-load_lua(lua_State *L, const char *module_name, int force_reload)
+runfile(lua_State *L, const char *module_name)
 {
+  // Here we do: dofile(package.searchpath(module_name, package.path))
+  // We could also: package.loaded[module_name] = nil -- force module reload
+  // and then: require(module_name)
+  // but that would be misleading as we want to run code, not load a module
+
+  int r, top;
+
   assert(module_name != NULL);
 
-  if (force_reload) {
-    /* package.loaded[module_name] = nil */
-    lua_getglobal(L, "package");
-    lua_getfield(L, -1, "loaded");
-    lua_pushnil(L);
-    lua_setfield(L, -2, module_name);
-    lua_pop(L, 2);
+  top = lua_gettop(L);
+
+  lua_pushstring(L, module_name);
+  lua_setglobal(L, "JOT_MODULE"); // pops the stack
+
+  lua_pushcfunction(L, msghandler);
+
+  r = luaL_loadstring(L,
+    "local jot = require 'jotlib'\n"
+    "local path = assert(package.searchpath(JOT_MODULE, package.path))\n"
+    "jot.log.debug(\"resolved '\" .. JOT_MODULE .. \"' as \" .. path)\n"
+    "dofile(path)\n"
+    );
+
+  if (r != LUA_OK) {
+    log_panic("Error loading built-in Lua code!");
+    lua_settop(L, top);
+    return r;
   }
 
-  /* require "module_name" */
-  lua_pushcfunction(L, msghandler);
-  lua_getglobal(L, "require");
-  lua_pushstring(L, module_name);
-  int r = lua_pcall(L, 1, 1, -3);
-  lua_remove(L, -2); /* pop msghandler; keep result */
+  r = lua_pcall(L, 0, 0, -2);
+  if (r != LUA_OK)
+    log_error("Error running code in %s (err=%d)", module_name, r);
 
+  lua_settop(L, top);
   return r;
 }
 
@@ -395,6 +413,8 @@ render(lua_State *L, struct cmdargs *args)
 
   if (sandbox) setup_sandbox(L);
   else log_warn("sandbox disabled by option -x");
+
+  // TODO should do things from about here in Lua!
 
   for (size_t i = 0; i < buf_size(initbuf); i++) {
     const char *fn = initbuf[i];
@@ -558,6 +578,7 @@ static int
 checks(lua_State *L, struct cmdargs *args)
 {
   int opt;
+  verbosity += 1;
   while ((opt = cmdargs_getopt(args, "qv")) >= 0) {
     switch (opt) {
       case 'q': verbosity = 0; break;
@@ -566,14 +587,8 @@ checks(lua_State *L, struct cmdargs *args)
         return usage("invalid option -%c", args->optopt);
     }
   }
-
   set_log_level(verbosity);
-
-  const int force = 1;
-  int r = load_lua(L, "checks", force);
-  lua_pop(L, 1);
-
-  return exitcode(r);
+  return exitcode(runfile(L, "checks"));
 }
 
 
@@ -581,6 +596,7 @@ static int
 trials(lua_State *L, struct cmdargs *args)
 {
   int opt;
+  verbosity += 1;
   while ((opt = cmdargs_getopt(args, "qv")) >= 0) {
     switch (opt) {
       case 'q': verbosity = 0; break;
@@ -589,14 +605,8 @@ trials(lua_State *L, struct cmdargs *args)
         return usage("invalid option -%c", args->optopt);
     }
   }
-
   set_log_level(verbosity);
-
-  const int force = 1;
-  int r = load_lua(L, "trials", force);
-  lua_pop(L, 1);
-
-  return exitcode(r);
+  return exitcode(runfile(L, "trials"));
 }
 
 

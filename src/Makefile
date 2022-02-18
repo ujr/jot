@@ -11,7 +11,7 @@ JOTINC = jot.h jotlib.h log.h cmdargs.h pikchr.h wildmatch.h walkdir.h pathbuf.h
 all: jot
 
 check checks: jot
-	./jot -v checks || true  # avoid error message from make
+	./jot checks || true  # avoid error message from make
 
 jot: $(JOTSRC) $(JOTINC)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(JOTSRC) $(LDLIBS)

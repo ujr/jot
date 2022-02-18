@@ -1,5 +1,6 @@
 {
   "code-block-style": false,
   "line-length": { "tables": false },
-  "no-inline-html": { "allowed_elements": ["sub", "sup"] }
+  "no-inline-html": { "allowed_elements": ["sub", "sup"] },
+  "no-multiple-blanks": false
 }

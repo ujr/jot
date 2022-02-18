@@ -26,6 +26,35 @@ References
 - The original Markdown description by John Gruber is
   available at <https://daringfireball.net/projects/markdown/>
 
+
+## Lua
+
+Lua's `dofile(fn)` function loads a chunk of Lua code from a file
+*fn*, then invokes this chunk as a function and returns whatever
+the chunk returned. The code in the file *fn* is the body of the
+anonymous function that `loadfile(fn)` returns and `dofile` invokes:
+
+``` Lua
+function dofile(fn)
+  local f = assert(loadfile(fn))
+  return f()
+end
+```
+
+A hypothetical `dostring(s)` would be implemented as `assert(load(s))()`
+where `load` works the same as `loadfile` but on a string, `assert`
+assures there was no error, and `()` invokes the chunk. The following
+two lines are almost equivalent
+
+``` Lua
+f = load("i = i + 1")
+f = function() i = i + 1 end
+```
+
+except that the former looks for `i` in the global environment,
+the latter in the local environment (and is much faster).
+
+
 ## Directory Structure
 
 - config.jot       main config, a Lua file, required (signature)
@@ -43,12 +72,14 @@ References
 - public/          build target folder; to be published; exclude from SCM
 - static/          assets; copied verbatim to site root; eg images, js, css
 
+
 ## Processing Pipelines
 
 - content/\*.md    markdown | mustache
 - content/\*.\*    mustache
 - partials/\*      mustache
 - static/\*        verbatim
+
 
 ## Site Building
 
@@ -76,6 +107,7 @@ render = function(fn, viewmodel, outfun)
   f:close()
 end
 ```
+
 
 ## Standard Options
 
