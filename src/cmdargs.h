@@ -17,10 +17,11 @@ struct cmdargs {
   const char *optarg;
 };
 
-void cmdargs_init(struct cmdargs *opts, int argc, char **argv);
-const char *cmdargs_getprog(struct cmdargs *opts);
-int cmdargs_getopt(struct cmdargs *opts, const char *optspec);
-const char *cmdargs_getarg(struct cmdargs *opts);
+void cmdargs_init(struct cmdargs *args, int argc, char **argv);
+const char *cmdargs_getprog(struct cmdargs *args);
+int cmdargs_getopt(struct cmdargs *args, const char *optspec);
+const char *cmdargs_getarg(struct cmdargs *args);
+int cmdargs_numleft(struct cmdargs *args);
 void cmdargs_reset(struct cmdargs *args);
 
 #endif /* CMDARGS_H */

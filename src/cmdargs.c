@@ -115,6 +115,14 @@ cmdargs_getarg(struct cmdargs *args)
 }
 
 
+int
+cmdargs_numleft(struct cmdargs *args)
+{
+  assert(args != NULL);
+  return args->argc - args->optind;
+}
+
+
 void
 cmdargs_reset(struct cmdargs *args)
 {

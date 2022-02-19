@@ -54,6 +54,7 @@ get_exe_path(char *buf, int size)
   return true;
 #else
   #error "get_exe_path for non-Linux not implemented"
+  // TODO return "./jot" (or ./argv[0])
 #endif
 }
 
@@ -123,6 +124,7 @@ usage(const char *fmt, ...)
 }
 
 
+/** set log level from given verbosity */
 static void
 set_log_level(int verbosity)
 {
@@ -142,6 +144,7 @@ set_log_level(int verbosity)
 }
 
 
+/** map Lua status to exit code */
 static int
 exitcode(int status)
 {
@@ -153,11 +156,10 @@ exitcode(int status)
 }
 
 
+/** raise an error on Lua app/core mismatch */
 static int
 check_lua_version(lua_State *L)
 {
-  // raises an error on app/core mismatch,
-  // so call in protected mode (lua_pcall)
   luaL_checkversion(L);
   return 0;
 }
@@ -189,13 +191,6 @@ setup_lua(lua_State *L, const char *exepath)
     lua_setglobal(L, "EXEPATH");
   }
 
-  // lua_newtable(L);
-  // for (i = 1; (arg = cmdargs_getarg(args)); i++) {
-  //   lua_pushstring(L, arg);
-  //   lua_rawseti(L, -2, i);
-  // }
-  // lua_setglobal(L, "ARGS");
-
   int r = luaL_dostring(L,
     "pcall(function()\n"
     "  EXEDIR = string.match(EXEPATH, \"^(.+)[/\\\\].*$\")\n"
@@ -222,6 +217,23 @@ setup_lua(lua_State *L, const char *exepath)
   // Shall be read-only for page templates!
 
   return SUCCESS;
+}
+
+
+static void
+loadargs(lua_State *L, struct cmdargs *args)
+{
+  const char *arg;
+  lua_Integer i;
+
+  /* expect table on top of stack */
+  luaL_checktype(L, -1, LUA_TTABLE);
+
+  /* set remaining args in table as 1, 2, ... */
+  for (i = 1; (arg = cmdargs_getarg(args)); i++) {
+    lua_pushstring(L, arg);
+    lua_rawseti(L, -2, i);
+  }
 }
 
 
@@ -286,42 +298,56 @@ msghandler(lua_State *L)
 }
 
 
+/* like lua_pcall but allows passing nargs, nrets, and message handler */
+static int
+runcode(lua_State *L, int nargs, int nrets, int f, const char *lua)
+{
+  int rc;
+
+  rc = luaL_loadstring(L, lua);
+  if (rc != LUA_OK) {
+    log_panic("Error loading built-in Lua code! (err=%d)", rc);
+    return rc;
+  }
+
+  /* move chunk below args, adjust msg handler pos (if given) */
+  lua_rotate(L, -(nargs+1), 1);
+  if (f) f -= 1;
+
+  rc = lua_pcall(L, nargs, nrets, f);
+  if (rc != LUA_OK) {
+    log_error("Error running built-in Lua code! (err=%d)", rc);
+  }
+
+  return rc;
+}
+
+
 /* run the code in the given Lua file (file name only, no dir, no ext) */
 static int
 runfile(lua_State *L, const char *module_name)
 {
   // Here we do: dofile(package.searchpath(module_name, package.path))
-  // We could also: package.loaded[module_name] = nil -- force module reload
-  // and then: require(module_name)
+  // Could also: package.loaded[module_name] = nil -- force module reload
+  //   and then: require(module_name)
   // but that would be misleading as we want to run code, not load a module
 
-  int r, top;
-
-  assert(module_name != NULL);
-
-  top = lua_gettop(L);
-
-  lua_pushstring(L, module_name);
-  lua_setglobal(L, "JOT_MODULE"); // pops the stack
+  int r, top = lua_gettop(L);
 
   lua_pushcfunction(L, msghandler);
 
-  r = luaL_loadstring(L,
-    "local jot = require 'jotlib'\n"
-    "local path = assert(package.searchpath(JOT_MODULE, package.path))\n"
-    "jot.log.debug(\"resolved '\" .. JOT_MODULE .. \"' as \" .. path)\n"
-    "dofile(path)\n"
-    );
+  assert(module_name != NULL);
+  lua_pushstring(L, module_name);
 
-  if (r != LUA_OK) {
-    log_panic("Error loading built-in Lua code!");
-    lua_settop(L, top);
-    return r;
+  r = runcode(L, 1, 1, -2,
+    "local name = ...\n"  /* get argument from stack */
+    "return assert(package.searchpath(name, package.path))\n");
+
+  if (r == LUA_OK) {
+    const char *path = luaL_checkstring(L, -1);
+    log_debug("resolved '%s' as %s", module_name, path);
+    r = runcode(L, 1, 0, -2, "local path = ...; dofile(path)");
   }
-
-  r = lua_pcall(L, 0, 0, -2);
-  if (r != LUA_OK)
-    log_error("Error running code in %s (err=%d)", module_name, r);
 
   lua_settop(L, top);
   return r;
@@ -375,41 +401,33 @@ render(lua_State *L, struct cmdargs *args)
   const char **initbuf = 0;
   const char **partbuf = 0;
   bool sandbox = true;
-  int opt, r, top;
+  int opt, num, top, r;
 
   /* jot render {-i luafile} {-p partial} [-o outfile] [file] [args] */
   while ((opt = cmdargs_getopt(args, "i:o:p:qvx")) >= 0) {
     switch (opt) {
-      case 'o':
-        outfn = args->optarg;
-        break;
-      case 'i':
-        buf_push(initbuf, args->optarg);
-        break;
-      case 'p':
-        buf_push(partbuf, args->optarg);
-        break;
-      case 'q':
-        verbosity = 0;
-        break;
-      case 'v':
-        verbosity += 1;
-        break;
-      case 'x':
-        sandbox = false;
-        break;
+      case 'o': outfn = args->optarg; break;
+      case 'i': buf_push(initbuf, args->optarg); break;
+      case 'p': buf_push(partbuf, args->optarg); break;
+      case 'q': verbosity = 0; break;
+      case 'v': verbosity += 1; break;
+      case 'x': sandbox = false; break;
       case ':':
-        usage("option -%c requires an argument", args->optopt);
-        return FAILHARD;
+        return usage("option -%c requires an argument", args->optopt);
       case '?':
-        usage("invalid option: -%c", args->optopt);
-        return FAILHARD;
+        return usage("invalid option: -%c", args->optopt);
     }
   }
 
   set_log_level(verbosity);
 
   infn = cmdargs_getarg(args);
+  num = cmdargs_numleft(args);
+
+  lua_createtable(L, num, 0);
+  loadargs(L, args);
+  lua_setglobal(L, "ARGS");
+  // TODO expose through jot.args[]
 
   if (sandbox) setup_sandbox(L);
   else log_warn("sandbox disabled by option -x");
@@ -478,8 +496,7 @@ render_markdown(lua_State *L, struct cmdargs *args)
   Blob input = BLOB_INIT;
   Blob output = BLOB_INIT;
   const char *infn;
-  int opt, pretty = 0;
-  int r = SUCCESS;
+  int opt, r, pretty = 0;
   UNUSED(L);
 
   /* jot markdown [-p pretty] [file] */
@@ -521,8 +538,7 @@ render_pikchr(lua_State *L, struct cmdargs *args)
   const char *infn, *pik, *svg;
   const char *class = "pikchr";
   Blob input = BLOB_INIT;
-  int opt, w, h, pretty = 0;
-  int r = SUCCESS;
+  int opt, r, w, h, pretty = 0;
   unsigned flags;
   UNUSED(L);
 
@@ -558,8 +574,10 @@ render_pikchr(lua_State *L, struct cmdargs *args)
       fputs(svg, stdout);
       fflush(stdout);
     }
-    else log_error("pikchr error in %s:\n%s", infn, svg);
-
+    else {
+      log_error("pikchr error in %s:\n%s", infn, svg);
+      r = FAILHARD;
+    }
     free((void*)svg);
   }
   else {
