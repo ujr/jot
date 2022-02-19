@@ -1,0 +1,34 @@
+pre.pikchr-src{
+  text-align: left;
+  padding: 1pc;
+  background-color: lightgray;
+}
+div.pikchr-wrapper.center:not(.source){
+  text-align: center;
+}
+div.pikchr-wrapper.center:not(.source) > pre.pikchr-src,
+div.pikchr-wrapper.center:not(.source) > div.pikchr-svg{
+  display:inline-block;  /* honor parent's text-align */
+}
+div.pikchr-wrapper.indent:not(.source){
+  margin-left: 2pc;
+}
+div.pikchr-wrapper.float-left:not(.source){
+  float: left;
+  padding: 2pc;
+}
+div.pikchr-wrapper.float-right:not(.source){
+  float: right;
+  padding: 2pc;
+}
+
+div.pikchr-wrapper:not(.source) > pre.pikchr-src{
+  /* hide Pikchr source when rendered SVG is shown */
+  display: none !important;
+  pointer-events: none !important;
+}
+div.pikchr-wrapper.source > div.pikchr-svg{
+  /* hide rendered SVG when Pikchr source is shown */
+  display: none !important;
+  pointer-events: none !important;
+}

@@ -27,6 +27,35 @@ References
   available at <https://daringfireball.net/projects/markdown/>
 
 
+## Pikchr
+
+D. Richard Hipp's new implementation of Kernighan's PIC language.
+Cool, I've been longing for that! See <https://pikchr.org> for
+information. Fossil generates the following DOM structure:
+
+    <div class="pikchr-wrapper ...">
+      <div class="pikchr-svg">
+        <svg class="pikchr">
+        </svg>
+      </div>
+      <pre class="pikchr-src">
+      </pre>
+    </div>
+
+The nesting allows for flexible styling from CSS. The three
+dots are optional CSS classes controlled by the info string
+from the Markdown fenced code block; among them: `center`,
+`float-left`, `float-right`. Ctrl-click toggles visibility
+between rendered SVG and Pikchr source with the help of some
+JavaScript ([fossil.pikchr.js] in the Fossil sources).
+
+The `jot pikchr` command and the `jot.pikchr()` function shall
+return unadorned SVG, while the higher level commands `jot render`
+and `jot build` shall emit the above DOM structure.
+
+[fossil.pikchr.js]: https://fossil-scm.org/home/file?name=src/fossil.pikchr.js
+
+
 ## Lua
 
 Lua's `dofile(fn)` function loads a chunk of Lua code from a file

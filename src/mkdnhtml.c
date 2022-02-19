@@ -24,6 +24,7 @@
 #include <string.h>
 
 #include "blob.h"
+#include "log.h"
 #include "markdown.h"
 #include "pikchr.h"
 
@@ -31,6 +32,7 @@
 #define UNUSED(x) ((void)(x))
 #define ISASCII(c) (0 <= (c) && (c) <= 127)
 #define ISBLANK(c) ((c) == ' ' || (c) == '\t')
+#define ISSPACE(c) ((c) == ' ' || ('\t' <= (c) && (c) <= '\r'))
 #define ISALNUM(c) (('0' <= (c) && (c) <= '9') || \
                     ('a' <= (c) && (c) <= 'z') || \
                     ('A' <= (c) && (c) <= 'Z'))
@@ -405,28 +407,71 @@ html_blockquote(Blob *out, Blob *text, void *udata)
 
 
 static void
+parse_pikchr_info(const char *text, size_t size, Blob *out)
+{
+  size_t i, j, n;
+  if (!text || !size) return;
+  /* extract known class names; skip other stuff */
+  for (j = 0; j < size; ) {
+    while (j < size && ISSPACE(text[j])) j++;
+    i = j;
+    while (j < size && !ISSPACE(text[j])) j++;
+    n = j - i;
+    if (n == 6 && strncmp(text+i, "center", n) == 0)
+      BLOB_ADDLIT(out, " center");
+    else if (n == 10 && strncmp(text+i, "float-left", n) == 0)
+      BLOB_ADDLIT(out, " float-left");
+    else if (n == 11 && strncmp(text+i, "float-right", n) == 0)
+      BLOB_ADDLIT(out, " float-right");
+    else if (n == 6 && strncmp(text+i, "indent", n) == 0)
+      BLOB_ADDLIT(out, " indent");
+    /* may support some more options/classes */
+  }
+}
+
+static void
 render_pikchr(Blob *out, const char *info, Blob *text)
 {
-  static const char *divclass = "pikchr";
+  /* Generated HTML structure is:
+      <div class="pikchr-wrapper ...">
+        <div class="pikchr-svg">
+          <svg class="pikchr">
+          </svg>
+        </div>
+        <pre class="pikchr-src">
+        </pre>
+      </div>
+     where ... is class(es) from the fenced code info string
+     and may be used for styling from CSS
+  */
+
   const char *svg;
   int wd, ht, flags = 0;
 
   UNUSED(info); // TODO get flags from info
 
-  svg = pikchr(blob_str(text), divclass, flags, &wd, &ht);
-  if (wd > 0 && ht > 0) {
-    BLOB_ADDLIT(out, "<div class=\"");
-    quote_attr(out, divclass, strlen(divclass), 0);
+  svg = pikchr(blob_str(text), "pikchr", flags, &wd, &ht);
+
+  if (svg && wd >= 0) {
+    log_debug("pikchr: wd=%d ht=%d", wd, ht);
+    BLOB_ADDLIT(out, "<div class=\"pikchr-wrapper");
+    parse_pikchr_info(info, info ? strlen(info) : 0, out);
     BLOB_ADDLIT(out, "\">\n");
+    BLOB_ADDLIT(out, "<div class=\"pikchr-svg\">\n");
     blob_addstr(out, svg);
-    BLOB_ADDLIT(out, "</div>\n");
+    BLOB_ADDLIT(out, "</div>\n<pre class=\"pikchr-src\">");
+    blob_add(out, text);
+    BLOB_ADDLIT(out, "</pre>\n</div>\n");
   }
   else {
-    BLOB_ADDLIT(out, "<pre class=\"error\">\n");
-    blob_addstr(out, svg); // TODO check: should already be HTML escaped!?
-    BLOB_ADDLIT(out, "</pre>\n");
+    BLOB_ADDLIT(out, "<div class=\"pikchr-wrapper error\">\n");
+    BLOB_ADDLIT(out, "<pre>");
+    if (svg) blob_addstr(out, svg);
+    else blob_addstr(out, "pikchr() returned null (out of memory)\n");
+    BLOB_ADDLIT(out, "</pre>\n</div>\n");
   }
-  free((void *) svg);
+
+  if (svg) free((void *) svg);
 }
 
 
