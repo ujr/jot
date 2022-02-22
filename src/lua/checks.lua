@@ -73,6 +73,10 @@ assert(path.join("/", "/", "/") == "/")
 assert(path.join("/foo/", "..", ".", "/bar/") == "/foo/.././bar")
 assert(path.join("", "foo", "") == "foo/")
 assert(path.join("inner", "", "empty", "", "args") == "inner/empty/args")
+assert(path.join({}) == ".");
+assert(path.join({"foo", "bar", "baz"}) == "foo/bar/baz")
+assert(path.join({"foo/", "//bar", ""}) == "foo/bar/");
+assert(path.join({"/", "foo", "/"}) == "/foo/")
 
 
 log.info("Checking path.norm()")

@@ -53,7 +53,8 @@ path.basename(path)  --get filename part of path
 path.dirname(path)   --get directory part of path
 path.split(path)     --iterator over all path components
 path.join(...)       --combine args into a path (string)
-path.norm(path)      --resolve . and ..  and // in path
+path.join(table)     --combine table entries into a path
+path.norm(path)      --resolve . and .. and // in path
 path.match(pat,path) --wildcard path matching (return boolean)
 ```
 
@@ -64,7 +65,7 @@ directory separators into just one.
 The **match** function knows about the wildcards `?`, `[...]`,
 `*` and `**`. The first three are standard, but note that they
 do not match the directory separator character (`/`).
-The last one matches any number of directries.
+The last one matches any number of directories.
 
 ## File system operations
 
