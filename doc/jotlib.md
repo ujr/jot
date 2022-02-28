@@ -12,11 +12,11 @@ local path = jot.path
 local log = jot.log
 ```
 
-## Transformation
+## Rendering
 
 ```Lua
-markdown(str, opts)  -- render Markdown in str to HTML
-pikchr(str, opts)    -- render Pikchr in str to SVG
+jot.markdown(str, opts)  -- render Markdown in str to HTML
+jot.pikchr(str, opts)    -- render Pikchr in str to SVG
 ```
 
 The **Markdown** renderer aims to be largely but not entirely
@@ -75,17 +75,18 @@ following directory (and file) operations (at the price of
 a dependency on POSIX).
 
 ```Lua
-os.getcwd()       -- get current working directory
-os.mkdir(path)    -- create directory (parents must exist)
-os.rmdir(path)    -- remove directory (must be empty)
-os.listdir(path)  -- return all directory entries (names)
-os.touch(path, ttime)   -- ensure file exists, update times
-os.remove(path)         -- delete the file at path
-os.rename(old, new)     -- rename and/or move a file
-os.exists(path, type)   -- return true iff path exists
-os.getinfo(path, tab)   -- get info on file at path
-os.walkdir(path, flags) -- file tree iterator (see below)
-os.tempdir(template)    -- create temporary directory
+fs.getcwd()       -- get current working directory
+fs.mkdir(path)    -- create directory (parents must exist)
+fs.rmdir(path)    -- remove directory (must be empty)
+fs.listdir(path)  -- return all directory entries (names)
+fs.touch(path, ttime)   -- ensure file exists, update times
+fs.remove(path)         -- delete the file at path
+fs.rename(old, new)     -- rename and/or move a file
+fs.exists(path, type)   -- return true iff path exists
+fs.getinfo(path, tab)   -- get info on file at path
+fs.walkdir(path, flags) -- file tree iterator (see below)
+fs.tempdir(template)    -- create temporary directory
+fs.glob(table, pat...)  -- find paths matching pat (see below)
 ```
 
 The functions that modify the file system return `true` on
@@ -127,3 +128,10 @@ If no argument is given, the directory will be created in
 `$TMPDIR` or */tmp*. If the *template* argument is given,
 it must be a string that ends in `XXXXXX` and is a valid
 file path; the `X` will be replaced with random letters.
+
+The **glob** function performs “globbing” or finding path
+names that match the given pattern. Path names are appended
+to the given table, and the given table is also the return
+value on success. On failure, return `nil` and a message.
+(Implemented on top of `path.match()` and `fs.walkdir()`,
+which was conveninent but probably not the most efficient.)

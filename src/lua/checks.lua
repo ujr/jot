@@ -155,6 +155,17 @@ assert(jot.touch(path.join(dir, "sub", "subsub", "nested")))
 assert(jot.exists(dir), "directory")
 assert(jot.exists(path.join(dir, "sub/subsub/nested"), "file"))
 assert(jot.exists(path.join(dir, "sub/subsub"), "directory"))
+--exercise globbing:
+local t = jot.glob({}, path.join(dir, "**", "*[ae]*"))
+table.sort(t)
+--for i,v in ipairs(t) do print(v) end
+assert(t[1] == path.join(dir, "bar"))
+assert(t[2] == path.join(dir, "baz"))
+assert(t[3] == path.join(dir, "sub", "ham"))
+assert(t[4] == path.join(dir, "sub", "spam"))
+assert(t[5] == path.join(dir, "sub", "subsub", "deeply"))
+assert(t[6] == path.join(dir, "sub", "subsub", "nested"))
+assert(t[7] == nil)
 --and recursively delete by a post-order walk (DP not D):
 for path, type in jot.walkdir(dir) do
   if type=="F" or type=="DP" or type=="SL" then

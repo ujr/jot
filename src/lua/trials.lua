@@ -16,6 +16,11 @@ log.warn("sample warn msg from Lua")
 log.error("sample error msg from Lua")
 log.panic("sample panic msg from Lua")
 
+local t = jot.glob({"foo", "bar"}, "../src/**/", "../**/*.md")
+for i, p in ipairs(t) do
+  print(p)
+end
+
 local svg = jot.pikchr("arrow; box \"Hello\" \"World\"", true);
 
 --print(svg)
@@ -53,7 +58,7 @@ print("$HOME is " .. jot.getenv("HOME"))
 
 print("===jot.walkdir(.)===")
 print("TYPE", "BYTES", "MODIFIED", "PATH")
-for path, type, size, mtime in jot.walkdir(".", 0) do
+for path, type, size, mtime in jot.walkdir(".", 64) do
   print(type, size, mtime, path)
 end
 

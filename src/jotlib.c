@@ -25,6 +25,7 @@
 #include "pikchr.h"
 #include "utils.h"
 #include "walkdir.h"
+#include "wildmatch.h"
 
 
 int
@@ -408,12 +409,12 @@ jot_walkdir_iter(lua_State *L)
 
 #define JOTLIB_WALKDIR_REGKEY "jotlib.walkdir"
 
-int
+static int
 jot_walkdir(lua_State *L)
 {
   struct walk *pwalk;
   const char *path = luaL_checkstring(L, 1);
-  int flags = lua_tointeger(L, 3);
+  int flags = lua_tointeger(L, 2);
 
   pwalk = lua_newuserdata(L, sizeof(*pwalk));
   assert(pwalk != NULL); // TODO null or error on ENOMEM?
@@ -426,6 +427,59 @@ jot_walkdir(lua_State *L)
 
   /* the iterator fun's upvalue, the struct, is already on stack */
   lua_pushcclosure(L, jot_walkdir_iter, 1);
+  return 1;
+}
+
+
+/* Lua function: glob(table, pat...): table | nil errmsg */
+static int
+jot_glob(lua_State *L)
+{
+  struct walk walk;
+  int wflags = WALK_FILE | WALK_PRE | WALK_ADORN;
+  const char *pat;
+  const char *dir;
+  size_t len, j;
+  int i, n;
+
+  luaL_checktype(L, 1, LUA_TTABLE);
+  luaL_checkstring(L, 2);
+
+  /* get num of args before pushing ref to table as retval */
+  n = lua_gettop(L);
+  lua_pushvalue(L, 1);
+
+  for (i = 2; i <= n; i++) {
+    pat = luaL_checklstring(L, i, &len);
+    /* find last dirsep before first wildcard */
+    j = strcspn(pat, "*?[");
+    if (j < len)
+      while (j > 0 && pat[j-1] != '/') j--;
+    if (j) {
+      ((char*)pat)[j-1] = '\0';  /* HACK but works with Lua 5.4 */
+      dir = pat;
+      pat = pat+j;
+    }
+    else { dir = "."; j=2; }
+    log_debug("glob: walk(dir=%s), match(pat=%s), j=%zu", dir, pat, j);
+    if (walkdir(&walk, dir, wflags) != 0)
+      return jot_error(L, "walkdir: %s", strerror(errno));
+
+    int type;
+    while ((type = walkdir_next(&walk)) > 0) {
+      const char *path = walkdir_path(&walk);
+      len = strlen(path);
+      //log_debug("matching: %s against %s", pat, path+j);
+      if (!*pat || (j < len && wildmatch(pat, path+j, WILD_PATHNAME | WILD_PERIOD))) {
+        lua_pushstring(L, path);
+        lua_seti(L, -2, luaL_len(L, -2)+1);
+        //log_debug("matched: %s", path);
+      }
+    }
+    walkdir_free(&walk);
+    if (type < 0)
+      return jot_error(L, "walkdir: %s", strerror(errno));
+  }
   return 1;
 }
 
@@ -530,6 +584,7 @@ static const struct luaL_Reg jotlib[] = {
   {"getenv",    jot_getenv},
   {"tempdir",   jot_tempdir},
   {"walkdir",   jot_walkdir},
+  {"glob",      jot_glob},
   {"pikchr",    jot_pikchr},
   {"markdown",  jot_markdown},
   {"checkblob", jot_checkblob},
