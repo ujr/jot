@@ -133,6 +133,8 @@ skip:
     if (!(e = readdir(pwalk->top->dp))) {
       if (errno) return pwalk->type = WALK_ERR;
       popdir(pwalk);
+      if (pwalk->flags & WALK_ADORN)
+        pathbuf_adorn(&pwalk->buf);
       pwalk->type = WALK_DP;
       if (pwalk->flags & WALK_POST)
         return pwalk->type;
@@ -157,6 +159,8 @@ start:
 
     if (S_ISDIR(pstat->st_mode)) {
       bool ok = pushdir(pwalk, path, pstat->st_dev, pstat->st_ino);
+      if (pwalk->flags & WALK_ADORN)
+        pathbuf_adorn(&pwalk->buf);
       pwalk->type = ok ? WALK_D : WALK_DNR;
       if (!ok || pwalk->flags & WALK_PRE)
         return pwalk->type;

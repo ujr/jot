@@ -28,6 +28,7 @@
 
 #define WALK_FOLLOW 16   /* follow symlinks (default: physical walk) */
 #define WALK_MOUNT  32   /* do not cross mount points */
+#define WALK_ADORN  64   /* adorn directories with a trailing '/' */
 
 
 struct walk {
