@@ -16,7 +16,9 @@ log.warn("sample warn msg from Lua")
 log.error("sample error msg from Lua")
 log.panic("sample panic msg from Lua")
 
-local t = jot.glob({"foo", "bar"}, "../src/**/", "../**/*.md")
+--error("oopsy")
+
+local t = jot.glob({"foo", "bar"}, "../src/**/", "../**/*.md", "jot.h")
 for i, p in ipairs(t) do
   print(p)
 end

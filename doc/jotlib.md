@@ -119,8 +119,9 @@ one of `"file"`, `"directory"`, `"symlink"`, `"other"`,
 is the time of last modification in seconds since the epoch.
 
 The **walkdir** function returns an iterator over the file
-tree starting at the given root path. See *walkdir.h* for
-details.
+tree starting at the given root path. The iterator yields
+four values: path, type, size, mtime. See *walkdir.h* for
+information on the known flags.
 
 The **tempdir** function creates an empty directory with
 a randomly chosen name and returns that name.

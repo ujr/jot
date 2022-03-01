@@ -13,10 +13,10 @@
 #include <sys/types.h>
 
 #include "log.h"
-#include "pathbuf.h"
 #include "walkdir.h"
 
-
+#define DIRSEP      '/'
+#define INITSIZE    512
 #define WALK_START  999  /* distinct from other WALK_xxx constants */
 #define IS_DOT_OR_DOTDOT(s) (s[0]=='.'&&(s[1]==0||(s[1]=='.'&&s[2]==0)))
 
@@ -26,8 +26,8 @@ struct wdir {
   DIR *dp;
   dev_t dev;
   ino_t ino;
+  size_t pathlen;
   //int level;
-  // TODO index into strbuf instead of pathbuf
 };
 
 
@@ -78,25 +78,88 @@ crossdev(struct walk *pwalk, struct stat *pstat)
 }
 
 
+static char *
+pathgrow(struct walk *pwalk, size_t more)
+{
+  char *p;
+  size_t n = pwalk->len + more + 1;
+  if (n < 2*pwalk->size) n = 2*pwalk->size;
+  p = realloc(pwalk->path, n);
+  if (!p) return 0;
+  pwalk->path = p;
+  pwalk->size = n;
+  return p;
+}
+
+
+static char *
+pathappend(struct walk *pwalk, const char *name)
+{
+  size_t len;
+  while (*name == DIRSEP) ++name;
+  len = strlen(name);
+  while (len && name[len-1] == DIRSEP) --len;
+  if (pwalk->len + 1 + len + 1 > pwalk->size)
+    if (!pathgrow(pwalk, 1+len))
+      return 0;
+  /* undo an eventual adorn (trailing DIRSEP) */
+  if (pwalk->len > pwalk->inilen && pwalk->path[pwalk->len-1] == DIRSEP)
+    pwalk->len--;
+  /* append a DIRSEP, then the new name */
+  pwalk->path[pwalk->len++] = DIRSEP;
+  memcpy(pwalk->path + pwalk->len, name, len);
+  pwalk->len += len;
+  pwalk->path[pwalk->len] = '\0';
+  return pwalk->path;
+}
+
+
+static char *
+pathadorn(struct walk *pwalk)
+{
+  if (pwalk->len > pwalk->inilen && pwalk->path[pwalk->len-1] == DIRSEP)
+    return pwalk->path;
+  if (pwalk->len + 1 + 1 > pwalk->size)
+    if (!pathgrow(pwalk, 1))
+      return 0;
+  pwalk->path[pwalk->len++] = DIRSEP;
+  pwalk->path[pwalk->len] = '\0';
+  return pwalk->path;
+}
+
+
 /** prepare for file tree walk at given path */
 int
 walkdir(struct walk *pwalk, const char *path, int flags)
 {
-  int mask = WALK_FILE|WALK_LINK|WALK_PRE|WALK_POST;
+  size_t len;
+  const int mask = WALK_FILE|WALK_LINK|WALK_PRE|WALK_POST;
 
-  if (!pwalk || !path) {
+  if (!pwalk) {
     errno = EINVAL;
     return WALK_ERR;
   }
 
+  if (!path || !*path) path = ".";
   if (!(flags & mask)) flags |= mask;
+
+  len = strlen(path);
+  while (len && path[len-1] == DIRSEP) --len;
 
   memset(pwalk, 0, sizeof(*pwalk));
   pwalk->type = WALK_START;
   pwalk->flags = flags;
 
-  if (!pathbuf_init(&pwalk->buf, path))
+  pwalk->size = len+51;  /* some extra space */
+  if (pwalk->size < INITSIZE)
+    pwalk->size = INITSIZE;
+  pwalk->path = malloc(pwalk->size);
+  if (!pwalk->path)
     return WALK_ERR;
+  memcpy(pwalk->path, path, len);
+  pwalk->path[len] = '\0';
+  pwalk->inilen = len;
+  pwalk->len = len;
 
   return WALK_OK;
 }
@@ -120,21 +183,24 @@ walkdir_next(struct walk *pwalk)
   pstat = &pwalk->statbuf;
 
   if (pwalk->type == WALK_START) {
-    path = pathbuf_path(&pwalk->buf);
+    path = pwalk->path;
     goto start;
   }
 
   while (pwalk->top) {
     /* pop path unless we just entered a directory */
-    if (pwalk->type != WALK_D)
-      pathbuf_pop(&pwalk->buf);
+    if (pwalk->type != WALK_D) {
+      pwalk->len = pwalk->top->pathlen;
+      pwalk->path[pwalk->len] = '\0';
+    }
 skip:
     errno = 0;
     if (!(e = readdir(pwalk->top->dp))) {
       if (errno) return pwalk->type = WALK_ERR;
       popdir(pwalk);
       if (pwalk->flags & WALK_ADORN)
-        pathbuf_adorn(&pwalk->buf);
+        if (!pathadorn(pwalk))
+          return WALK_ERR;
       pwalk->type = WALK_DP;
       if (pwalk->flags & WALK_POST)
         return pwalk->type;
@@ -142,7 +208,8 @@ skip:
     }
     if (IS_DOT_OR_DOTDOT(e->d_name)) goto skip;
 
-    path = pathbuf_push(&pwalk->buf, e->d_name);
+    path = pathappend(pwalk, e->d_name);
+    if (!path) return WALK_ERR;
 start:
     log_trace("walkdir: stat %s", path);
     if ((follow ? stat(path, pstat) : lstat(path, pstat)) < 0) {
@@ -150,17 +217,17 @@ start:
       return pwalk->type = denied ? WALK_NS : WALK_ERR;
     }
 
-    if ((pwalk->flags & WALK_MOUNT) && crossdev(pwalk, pstat)) {
+    if ((pwalk->flags & WALK_MOUNT) && crossdev(pwalk, pstat))
       continue;
-    }
-    if (looping(pwalk, pstat)) {
+    if (looping(pwalk, pstat))
       continue;
-    }
 
     if (S_ISDIR(pstat->st_mode)) {
       bool ok = pushdir(pwalk, path, pstat->st_dev, pstat->st_ino);
+      if (ok) pwalk->top->pathlen = pwalk->len;
       if (pwalk->flags & WALK_ADORN)
-        pathbuf_adorn(&pwalk->buf);
+        if (!pathadorn(pwalk))
+          return WALK_ERR;
       pwalk->type = ok ? WALK_D : WALK_DNR;
       if (!ok || pwalk->flags & WALK_PRE)
         return pwalk->type;
@@ -186,7 +253,11 @@ void
 walkdir_free(struct walk *pwalk)
 {
   if (!pwalk) return;
-  pathbuf_free(&pwalk->buf);
-  while (pwalk->top) popdir(pwalk);
+  free(pwalk->path);
+  pwalk->path = 0;
+  pwalk->size = 0;
+  pwalk->len = pwalk->inilen = 0;
+  while (pwalk->top)
+    popdir(pwalk);
   pwalk->type = WALK_DONE;
 }

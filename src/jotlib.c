@@ -417,7 +417,7 @@ jot_walkdir(lua_State *L)
   int flags = lua_tointeger(L, 2);
 
   pwalk = lua_newuserdata(L, sizeof(*pwalk));
-  assert(pwalk != NULL); // TODO null or error on ENOMEM?
+  assert(pwalk != NULL);
 
   if (walkdir(pwalk, path, flags) != 0)
     return jot_error(L, "walkdir: %s", strerror(errno));
@@ -455,13 +455,16 @@ jot_glob(lua_State *L)
     j = strcspn(pat, "*?[");
     if (j < len)
       while (j > 0 && pat[j-1] != '/') j--;
-    if (j) {
+    if (j == len) {
+      j = 0;
+      dir = pat;  pat = "**";
+    }
+    else if (j > 0) {
       ((char*)pat)[j-1] = '\0';  /* HACK but works with Lua 5.4 */
-      dir = pat;
-      pat = pat+j;
+      dir = pat;  pat = pat+j;
     }
     else { dir = "."; j=2; }
-    log_debug("glob: walk(dir=%s), match(pat=%s), j=%zu", dir, pat, j);
+    log_debug("glob: walkdir(%s) and match against %s", dir, pat);
     if (walkdir(&walk, dir, wflags) != 0)
       return jot_error(L, "walkdir: %s", strerror(errno));
 

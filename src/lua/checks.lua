@@ -166,6 +166,10 @@ assert(t[4] == path.join(dir, "sub", "spam"))
 assert(t[5] == path.join(dir, "sub", "subsub", "deeply"))
 assert(t[6] == path.join(dir, "sub", "subsub", "nested"))
 assert(t[7] == nil)
+--globbing a single file:
+t = jot.glob({}, path.join(dir, "sub", "spam"))
+assert(t[1] == path.join(dir, "sub", "spam"))
+assert(t[2] == nil)
 --and recursively delete by a post-order walk (DP not D):
 for path, type in jot.walkdir(dir) do
   if type=="F" or type=="DP" or type=="SL" then

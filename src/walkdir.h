@@ -2,7 +2,6 @@
 #define WALKDIR_H
 
 #include <sys/stat.h>
-#include "pathbuf.h"
 
 
 /* return values */
@@ -34,19 +33,28 @@
 struct walk {
   int flags;
   int type;
-  struct pathbuf buf;
   struct stat statbuf;
   struct wdir *top;
+  char *path;
+  size_t len;
+  size_t size;
+  size_t inilen;
 };
 
 
-#define walkdir_path(pwalk) pathbuf_path(&(pwalk)->buf)
-#define walkdir_size(pwalk) ((pwalk)->statbuf.st_size)
+#define walkdir_path(pwalk)  ((pwalk)->path)
+#define walkdir_size(pwalk)  ((pwalk)->statbuf.st_size)
 #define walkdir_mtime(pwalk) ((pwalk)->statbuf.st_mtime)
 
 int walkdir(struct walk *pwalk, const char *path, int flags);
 int walkdir_next(struct walk *pwalk);
 void walkdir_free(struct walk *pwalk);
 
+
+/* Usage: call walkdir() with desired starting path and flags;
+   then repeatedly call waldir_next() to advance the walk;
+   call walkdir_path(), walkdir_size(), walkdir_mtime() to
+   retrieve information on the current file or directory;
+   when done (even if by error) always call walkdir_free() */
 
 #endif
