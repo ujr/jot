@@ -108,7 +108,7 @@ failed(lua_State *L, const char *fmt, ...)
 
 
 static int
-jot_getcwd(lua_State *L)
+fs_getcwd(lua_State *L)
 {
   char *buf = 0;
   size_t len;
@@ -135,7 +135,7 @@ jot_getcwd(lua_State *L)
 
 
 static int
-jot_mkdir(lua_State *L)
+fs_mkdir(lua_State *L)
 {
   const char *path = luaL_checkstring(L, 1);
   if (!lua_isnone(L, 2))
@@ -149,7 +149,7 @@ jot_mkdir(lua_State *L)
 
 
 static int
-jot_rmdir(lua_State *L)
+fs_rmdir(lua_State *L)
 {
   const char *path = luaL_checkstring(L, 1);
   if (!lua_isnone(L, 2))
@@ -162,7 +162,7 @@ jot_rmdir(lua_State *L)
 
 
 static int
-jot_listdir(lua_State *L)
+fs_listdir(lua_State *L)
 {
   DIR *dp;
   struct dirent *e;
@@ -196,7 +196,7 @@ jot_listdir(lua_State *L)
 
 
 static int
-jot_touch(lua_State *L)
+fs_touch(lua_State *L)
 {
   int isnum;
   const char *path = luaL_checkstring(L, 1);
@@ -211,7 +211,7 @@ jot_touch(lua_State *L)
 
 
 static int
-jot_remove(lua_State *L) {
+fs_remove(lua_State *L) {
   const char *path = luaL_checkstring(L, 1);
   if (lua_gettop(L) > 1)
     return jot_error(L, "too many arguments");
@@ -222,7 +222,7 @@ jot_remove(lua_State *L) {
 
 
 static int
-jot_rename(lua_State *L) {
+fs_rename(lua_State *L) {
   const char *oldname = luaL_checkstring(L, 1);
   const char *newname = luaL_checkstring(L, 2);
   if (lua_gettop(L) > 2)
@@ -234,7 +234,7 @@ jot_rename(lua_State *L) {
 
 
 static int
-jot_exists(lua_State *L)
+fs_exists(lua_State *L)
 {
   struct stat statbuf;
   const char *path = luaL_checkstring(L, 1);
@@ -263,7 +263,7 @@ jot_exists(lua_State *L)
 
 
 static int
-jot_getinfo(lua_State *L)
+fs_getinfo(lua_State *L)
 {
   struct stat statbuf;
   const char *type;
@@ -291,16 +291,6 @@ jot_getinfo(lua_State *L)
 }
 
 
-static int
-jot_getenv(lua_State *L)
-{
-  const char *name = luaL_checkstring(L, 1);
-  const char *value = getenv(name);
-  lua_pushstring(L, value); /* pushes nil if value is null */
-  return 1;
-}
-
-
 static void
 randlets(char *buf, size_t len)
 {
@@ -319,7 +309,7 @@ randlets(char *buf, size_t len)
 
 
 static int
-jot_tempdir(lua_State *L)
+fs_tempdir(lua_State *L)
 {
   static const char *pat = "XXXXXX";
   const char *arg = lua_tostring(L, 1);
@@ -363,11 +353,11 @@ jot_tempdir(lua_State *L)
 
 
 static int
-jot_walkdir_gc(lua_State *L)
+fs_walkdir_gc(lua_State *L)
 {
   struct walk *pwalk = lua_touserdata(L, 1);
   if (pwalk) {
-    log_trace("jot_walkdir_gc");
+    log_trace("fs_walkdir_gc");
     walkdir_free(pwalk);
   }
   return 0;
@@ -375,7 +365,7 @@ jot_walkdir_gc(lua_State *L)
 
 
 static int
-jot_walkdir_iter(lua_State *L)
+fs_walkdir_iter(lua_State *L)
 {
   struct walk *pwalk = lua_touserdata(L, lua_upvalueindex(1));
 
@@ -410,7 +400,7 @@ jot_walkdir_iter(lua_State *L)
 #define JOTLIB_WALKDIR_REGKEY "jotlib.walkdir"
 
 static int
-jot_walkdir(lua_State *L)
+fs_walkdir(lua_State *L)
 {
   struct walk *pwalk;
   const char *path = luaL_checkstring(L, 1);
@@ -426,14 +416,14 @@ jot_walkdir(lua_State *L)
   lua_setmetatable(L, -2); /* udata's metatable; from now on __gc may be called */
 
   /* the iterator fun's upvalue, the struct, is already on stack */
-  lua_pushcclosure(L, jot_walkdir_iter, 1);
+  lua_pushcclosure(L, fs_walkdir_iter, 1);
   return 1;
 }
 
 
 /* Lua function: glob(table, pat...): table | nil errmsg */
 static int
-jot_glob(lua_State *L)
+fs_glob(lua_State *L)
 {
   struct walk walk;
   int wflags = WALK_FILE | WALK_PRE | WALK_ADORN;
@@ -483,6 +473,16 @@ jot_glob(lua_State *L)
     if (type < 0)
       return jot_error(L, "walkdir: %s", strerror(errno));
   }
+  return 1;
+}
+
+
+static int
+jot_getenv(lua_State *L)
+{
+  const char *name = luaL_checkstring(L, 1);
+  const char *value = getenv(name);
+  lua_pushstring(L, value); /* pushes nil if value is null */
   return 1;
 }
 
@@ -569,25 +569,30 @@ getdirsep(lua_State *L)
   lua_getglobal(L, "package");
   lua_getfield(L, -1, "config");
   dirsep = lua_tostring(L, -1);
-  lua_pop(L, 2); // package and config
+  lua_pop(L, 2);  /* package and config */
   return dirsep && *dirsep ? *dirsep : '/';
 }
 
 
+static const struct luaL_Reg fslib[] = {
+  {"getcwd",    fs_getcwd  },
+  {"mkdir",     fs_mkdir   },
+  {"rmdir",     fs_rmdir   },
+  {"touch",     fs_touch   },
+  {"rename",    fs_rename  },
+  {"remove",    fs_remove  },
+  {"exists",    fs_exists  },
+  {"getinfo",   fs_getinfo },
+  {"tempdir",   fs_tempdir },
+  {"listdir",   fs_listdir },
+  {"walkdir",   fs_walkdir },
+  {"glob",      fs_glob    },
+  {0, 0}
+};
+
+
 static const struct luaL_Reg jotlib[] = {
-  {"getcwd",    jot_getcwd},
-  {"mkdir",     jot_mkdir},
-  {"rmdir",     jot_rmdir},
-  {"listdir",   jot_listdir},
-  {"touch",     jot_touch},
-  {"rename",    jot_rename},
-  {"remove",    jot_remove},
-  {"exists",    jot_exists},
-  {"getinfo",   jot_getinfo},
   {"getenv",    jot_getenv},
-  {"tempdir",   jot_tempdir},
-  {"walkdir",   jot_walkdir},
-  {"glob",      jot_glob},
   {"pikchr",    jot_pikchr},
   {"markdown",  jot_markdown},
   {"checkblob", jot_checkblob},
@@ -604,7 +609,7 @@ luaopen_jotlib(lua_State *L)
   log_trace("using '%c' as dirsep", dirsep);
 
   luaL_newmetatable(L, JOTLIB_WALKDIR_REGKEY);
-  lua_pushcfunction(L, jot_walkdir_gc);
+  lua_pushcfunction(L, fs_walkdir_gc);
   lua_setfield(L, -2, "__gc");
   lua_pop(L, 1);
 
@@ -615,6 +620,9 @@ luaopen_jotlib(lua_State *L)
 
   luaopen_pathlib(L);
   lua_setfield(L, -2, "path");
+
+  luaL_newlib(L, fslib);
+  lua_setfield(L, -2, "fs");
 
   lua_pushstring(L, VERSION);
   lua_setfield(L, -2, "VERSION");

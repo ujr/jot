@@ -5,7 +5,7 @@ print("package.path:  " .. package.path)
 print("package.cpath: " .. package.cpath)
 
 local jot = require "jotlib"
-local log, path = jot.log, jot.path
+local log, path, fs = jot.log, jot.path, jot.fs
 
 print("jot.VERSION = " .. jot.VERSION)
 
@@ -18,7 +18,7 @@ log.panic("sample panic msg from Lua")
 
 --error("oopsy")
 
-local t = jot.glob({"foo", "bar"}, "../src/**/", "../**/*.md", "jot.h")
+local t = fs.glob({"foo", "bar"}, "../src/**/", "../**/*.md", "jot.h")
 for i, p in ipairs(t) do
   print(p)
 end
@@ -41,26 +41,26 @@ This is Jot {{JOT_VERSION}}, f() = {{f}}, {{o.a}}{{o.b}}{{&o.c}}
 ]], _ENV)
 print(s)
 
-for _, dir in ipairs(jot.listdir "/home/ujr/doc/src/jot/src") do
+for _, dir in ipairs(fs.listdir "/home/ujr/doc/src/jot/src") do
   print("  " .. dir)
 end
 
-print("cwd: " .. jot.getcwd())
+print("cwd: " .. fs.getcwd())
 print(path.norm(path.join("./", "good", ".", "bye", "/.")))
 --log.panic = "log is a readonly table"
 --error("oops, an error")
 
-assert(jot.touch("./DROPME.tmp"))
-assert(jot.mkdir("./tempdir"))
-assert(jot.rename("./DROPME.tmp", "./tempdir/testfile"))
-assert(jot.remove("./tempdir/testfile"))
-assert(jot.rmdir("./tempdir"))
-print("cwd is " .. jot.getcwd())
+assert(fs.touch("./DROPME.tmp"))
+assert(fs.mkdir("./tempdir"))
+assert(fs.rename("./DROPME.tmp", "./tempdir/testfile"))
+assert(fs.remove("./tempdir/testfile"))
+assert(fs.rmdir("./tempdir"))
+print("cwd is " .. fs.getcwd())
 print("$HOME is " .. jot.getenv("HOME"))
 
 print("===jot.walkdir(.)===")
 print("TYPE", "BYTES", "MODIFIED", "PATH")
-for path, type, size, mtime in jot.walkdir(".", 64) do
+for path, type, size, mtime in fs.walkdir(".", 64) do
   print(type, size, mtime, path)
 end
 

@@ -8,8 +8,9 @@ for convenience.
 
 ```Lua
 local jot = require "jotlib"
-local path = jot.path
 local log = jot.log
+local path = jot.path
+local fs = jot.fs
 ```
 
 ## Rendering
@@ -78,7 +79,7 @@ a dependency on POSIX).
 fs.getcwd()       -- get current working directory
 fs.mkdir(path)    -- create directory (parents must exist)
 fs.rmdir(path)    -- remove directory (must be empty)
-fs.listdir(path)  -- return all directory entries (names)
+fs.listdir(path)  -- return all names in the directory at path
 fs.touch(path, ttime)   -- ensure file exists, update times
 fs.remove(path)         -- delete the file at path
 fs.rename(old, new)     -- rename and/or move a file
@@ -114,14 +115,20 @@ The **getinfo** function returns a table with information
 on the file at the given *path*. If the second argument is
 a table, this table will be reused and returned. Three
 fields are added to the returned table: `type`, which is
-one of `"file"`, `"directory"`, `"symlink"`, `"other"`,
-`size`, which is file size in bytes, and `mtime` which
+one of `"file"`, `"directory"`, `"symlink"`, `"other"`;
+`size`, which is file size in bytes; and `mtime`, which
 is the time of last modification in seconds since the epoch.
 
 The **walkdir** function returns an iterator over the file
-tree starting at the given root path. The iterator yields
-four values: path, type, size, mtime. See *walkdir.h* for
-information on the known flags.
+tree starting at the given root path. For each file tree
+entry, the iterator yields four values: path, type, size, mtime.
+Here *path* is the full path; *type* is one of `"F"` (file),
+`"D"` (directory when entered), `"DP"` (directory when leaved),
+`"SL"` (symbolic link), `"NS"` (no permission to stat(2) current
+path), `"DNR"` (could not opendir(2) current path); *size*
+is the file size in bytes (and undefined for directories);
+and *mtime* is the modification time in seconds since the epoch.
+See *walkdir.h* for information on the known flags.
 
 The **tempdir** function creates an empty directory with
 a randomly chosen name and returns that name.

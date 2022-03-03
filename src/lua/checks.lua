@@ -1,12 +1,13 @@
 -- self checks
 
 local jot = require "jotlib"
-local path = jot.path
 local log = jot.log
+local path = jot.path
+local fs = jot.fs
 
 
 --log.info("Checking blob functions")
---assert(jot.checkblob(true))
+--assert(jot.checkblob(true))  -- makes Valgrind fail
 
 
 log.info("Checking path.basename()")
@@ -119,44 +120,46 @@ assert(path.match("**/", "bar/"))
 assert(path.match("**/", "bar/baz/"))
 
 
-log.info("Checking miscellaneous functions")
-assert(jot.exists(".", "directory") == true)
-assert(jot.exists("..", "file") == false)
-assert(jot.exists("..", "any") == true)
-assert(jot.exists(EXEPATH))
-assert(jot.exists(EXEPATH, "file"))
-assert(not jot.exists(EXEPATH, "directory"))
-assert(jot.exists(path.dirname(EXEPATH), "directory"))
-local s = jot.getcwd()
+log.info("Checking file system operation: getcwd, exists, mkdir, rmdir")
+assert(fs.exists(".", "directory") == true)
+assert(fs.exists("..", "file") == false)
+assert(fs.exists("..", "any") == true)
+assert(fs.exists(EXEPATH))
+assert(fs.exists(EXEPATH, "file"))
+assert(not fs.exists(EXEPATH, "directory"))
+assert(fs.exists(path.dirname(EXEPATH), "directory"))
+local s = fs.getcwd()
 assert(type(s) == "string")
 assert(#s > 0)
 local name = "/tmp/unlikelybutriskyname"
-assert(jot.mkdir(name))
-assert(jot.exists(name, "directory"))
-local info = assert(jot.getinfo(name))
+assert(fs.mkdir(name))
+assert(fs.exists(name, "directory"))
+local info = assert(fs.getinfo(name))
 assert(type(info) == "table")
 assert(info.type == "directory")
+log.debug(string.format("type %s, size %s, mtime %s",
+  info.type, info.size, os.date("%Y-%m-%d %H:%M:%S", info.mtime)))
 --print(info.type, info.size, os.date("%Y-%m-%d %H:%M:%S", info.mtime))
-assert(jot.rmdir(name))
+assert(fs.rmdir(name))
 
 
-log.info("Checking file system operations")
-dir = assert(jot.tempdir())
-assert(jot.touch(path.join(dir, "foo")))
-assert(jot.touch(path.join(dir, "bar")))
-assert(jot.touch(path.join(dir, "baz")))
-assert(jot.mkdir(path.join(dir, "sub")))
-assert(jot.touch(path.join(dir, "sub", "spam")))
-assert(jot.touch(path.join(dir, "sub", "ham")))
-assert(jot.mkdir(path.join(dir, "sub", "subsub")))
-assert(jot.touch(path.join(dir, "sub", "subsub", "deeply")))
-assert(jot.touch(path.join(dir, "sub", "subsub", "nested")))
+log.info("Checking file system operations: touch, glob, walkdir, remove")
+local dir = assert(fs.tempdir())
+assert(fs.touch(path.join(dir, "foo")))
+assert(fs.touch(path.join(dir, "bar")))
+assert(fs.touch(path.join(dir, "baz")))
+assert(fs.mkdir(path.join(dir, "sub")))
+assert(fs.touch(path.join(dir, "sub", "spam")))
+assert(fs.touch(path.join(dir, "sub", "ham")))
+assert(fs.mkdir(path.join(dir, "sub", "subsub")))
+assert(fs.touch(path.join(dir, "sub", "subsub", "deeply")))
+assert(fs.touch(path.join(dir, "sub", "subsub", "nested")))
 --check stuff exists:
-assert(jot.exists(dir), "directory")
-assert(jot.exists(path.join(dir, "sub/subsub/nested"), "file"))
-assert(jot.exists(path.join(dir, "sub/subsub"), "directory"))
+assert(fs.exists(dir), "directory")
+assert(fs.exists(path.join(dir, "sub/subsub/nested"), "file"))
+assert(fs.exists(path.join(dir, "sub/subsub"), "directory"))
 --exercise globbing:
-local t = jot.glob({}, path.join(dir, "**", "*[ae]*"))
+local t = fs.glob({}, path.join(dir, "**", "*[ae]*"))
 table.sort(t)
 --for i,v in ipairs(t) do print(v) end
 assert(t[1] == path.join(dir, "bar"))
@@ -167,16 +170,16 @@ assert(t[5] == path.join(dir, "sub", "subsub", "deeply"))
 assert(t[6] == path.join(dir, "sub", "subsub", "nested"))
 assert(t[7] == nil)
 --globbing a single file:
-t = jot.glob({}, path.join(dir, "sub", "spam"))
+t = fs.glob({}, path.join(dir, "sub", "spam"))
 assert(t[1] == path.join(dir, "sub", "spam"))
 assert(t[2] == nil)
 --and recursively delete by a post-order walk (DP not D):
-for path, type in jot.walkdir(dir) do
+for path, type in fs.walkdir(dir) do
   if type=="F" or type=="DP" or type=="SL" then
-    assert(jot.remove(path))
+    assert(fs.remove(path))
   end
 end
-assert(not jot.exists(dir))
+assert(not fs.exists(dir))
 
 
 log.info("Checking Markdown rendering");
