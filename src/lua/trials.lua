@@ -1,8 +1,11 @@
+
+local args = ...
 print("Jot version:   " .. JOT_VERSION)
 print("Lua version:   " .. LUA_VERSION)
 print("Executable:    " .. EXEPATH)
 print("package.path:  " .. package.path)
 print("package.cpath: " .. package.cpath)
+print("args:          " .. table.concat(args, ", "))
 
 local jot = require "jotlib"
 local log, path, fs = jot.log, jot.path, jot.fs

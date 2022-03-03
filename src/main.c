@@ -45,16 +45,23 @@ fatal(void)
 static bool
 get_exe_path(char *buf, int size)
 {
-#if __linux__
+#if defined(__linux__)
   char path[128];
   sprintf(path, "/proc/%d/exe", getpid());
   int len = readlink(path, buf, size - 1);
   if (len < 0 || len > size-1) return false;
   buf[len] = '\0';
   return true;
+#elif defined(_WIN32)
+  /* note: _WIN32 is also defined for 64bit Windows */
+  #error "get_exe_path for Windows not yet implemented"
+#elif defined(__APPLE__)
+  #error "get_exe_path for macOS not yet implemented"
+#elif defined(__unix__)
+  /* note: readlink(2) is POSIX, but /proc/PID/exe is Linux */
+  #error "get_exe_path for Unix (not Linux) not yet implemented"
 #else
-  #error "get_exe_path for non-Linux not implemented"
-  // TODO return "./jot" (or ./argv[0])
+  strcpy(buf, "./jot");  /* last resort? */
 #endif
 }
 
@@ -115,12 +122,43 @@ usage(const char *fmt, ...)
     "  -t DIR          target: build to DIR (override config)\n"
     "  -d              build draft posts\n"
     "\nRender options:\n"
-    "  -i FILE.lua     load FILE.lua to init render env\n"
-    "  -p FILE.tmpl    make FILE.tmpl available as {{>FILE.tmpl}}\n"
-    "  -o FILE         render to FILE instead of stdout\n\n");
+    "  -l FILES        load Lua file(s) to init render env\n"
+    "  -p GLOBS        load partials and expose through {{>FILE}}\n"
+    "  -o FILE         render to FILE instead of stdout\n"
+    "\nWhere supported, multiple files or globs are ;-separated\n\n");
   }
 
   return fmt ? FAILHARD : SUCCESS;
+}
+
+
+static int
+help(const char *cmd)
+{
+  FILE *fp = stdout;
+  if (!cmd || !*cmd) {
+    fprintf(fp,
+      "\nThis is %s version %s,\n"
+      "the static site generator for the unpretentious,\n"
+      "using Lua scripting and mustache-like templates.\n\n",
+      PRODUCT, VERSION);
+    fprintf(fp, "Usage: %s [opts] <cmd> [opts] [args]\n", me);
+    fprintf(fp, "Run  %s <cmd> -h  for help on <cmd>\n", me);
+  }
+  else if (streq(cmd, "checks") || streq(cmd, "check")) {
+    fprintf(fp,
+      "\nRun built-in self checks. Depending on verbosity (as\n"
+      "controlled by the options -v and -q) this may produce\n"
+      "from no output to lots of output. If (and only if) all\n"
+      "checks are successful, %s returns status %d.\n\n",
+      me, SUCCESS);
+  }
+  // TODO help on other commands
+  else {
+    fprintf(fp,
+      "\nCommand %s has no help available, I'm sorry.\n\n", cmd);
+  }
+  return ferror(fp) ? FAILSOFT : SUCCESS;
 }
 
 
@@ -298,59 +336,48 @@ msghandler(lua_State *L)
 }
 
 
-/* like lua_pcall but allows passing nargs, nrets, and message handler */
-static int
-runcode(lua_State *L, int nargs, int nrets, int f, const char *lua)
+/* like luaL_dostring but allow passing nargs and nrets */
+static void
+runcode(lua_State *L, int nargs, int nrets, const char *lua)
 {
-  int rc;
-
-  rc = luaL_loadstring(L, lua);
-  if (rc != LUA_OK) {
-    log_panic("Error loading built-in Lua code! (err=%d)", rc);
-    return rc;
+  int rc = luaL_loadstring(L, lua);
+  if (rc == LUA_OK) {
+    lua_rotate(L, -(nargs+1), 1);  /* arg1 .. argN chunk => chunk arg1 .. argN */
+    lua_call(L, nargs, nrets);
   }
-
-  /* move chunk below args, adjust msg handler pos (if given) */
-  lua_rotate(L, -(nargs+1), 1);
-  if (f) f -= 1;
-
-  rc = lua_pcall(L, nargs, nrets, f);
-  if (rc != LUA_OK) {
-    log_error("Error running built-in Lua code! (err=%d)", rc);
-  }
-
-  return rc;
+  else luaL_error(L, "error loading built-in Lua code (err=%d)", rc);
 }
 
 
 /* run the code in the given Lua file (file name only, no dir, no ext) */
-static int
-runfile(lua_State *L, const char *module_name)
+static void
+runfile(lua_State *L, const char *module_name, int nargs, int nrets)
 {
   // Here we do: dofile(package.searchpath(module_name, package.path))
   // Could also: package.loaded[module_name] = nil -- force module reload
   //   and then: require(module_name)
   // but that would be misleading as we want to run code, not load a module
 
-  int r, top = lua_gettop(L);
-
-  lua_pushcfunction(L, msghandler);
+  const char *path;
+  int rc;
 
   assert(module_name != NULL);
   lua_pushstring(L, module_name);
 
-  r = runcode(L, 1, 1, -2,
+  runcode(L, 1, 1,
     "local name = ...\n"  /* get argument from stack */
     "return assert(package.searchpath(name, package.path))\n");
 
-  if (r == LUA_OK) {
-    const char *path = luaL_checkstring(L, -1);
-    log_debug("resolved '%s' as %s", module_name, path);
-    r = runcode(L, 1, 0, -2, "local path = ...; dofile(path)");
+  path = luaL_checkstring(L, -1);
+  log_debug("resolved '%s' as %s", module_name, path);
+  rc = luaL_loadfile(L, path);
+  if (rc == LUA_OK) {
+    /* arg1 .. argN path chunk => chunk arg1 .. argN path, then pop path */
+    lua_rotate(L, -(nargs+2), 1);
+    lua_pop(L, 1);
+    lua_call(L, nargs, nrets);
   }
-
-  lua_settop(L, top);
-  return r;
+  else luaL_error(L, "error loading Lua code from %s (err=%d)", path, rc);
 }
 
 
@@ -390,6 +417,33 @@ readfile(const char *fn, Blob *blob)
     }
   }
 
+  return SUCCESS;
+}
+
+
+/** write the blob to the named file (overwrite if exists) */
+static int
+writefile(const char *fn, const char *text)
+{
+  FILE *fp = stdout;
+  assert(text != 0);
+
+  if (fn && !streq(fn, "-")) {
+    fp = fopen(fn, "w");
+    if (!fp) {
+      log_error("write file %s: %s", fn, strerror(errno));
+      return FAILSOFT;
+    }
+  }
+  fputs(text, fp);
+  fflush(fp);
+  if (fp != stdout)
+    fclose(fp);
+  if (ferror(fp)) {
+    log_error("write file %s: %s", fn,
+      errno ? strerror(errno) : "unspecified error");
+    return FAILSOFT;
+  }
   return SUCCESS;
 }
 
@@ -490,40 +544,38 @@ bail:
 }
 
 
+/** jot markdown [-o outfile] [-p pretty] [file] */
 static int
-render_markdown(lua_State *L, struct cmdargs *args)
+domarkdown(lua_State *L)
 {
   Blob input = BLOB_INIT;
   Blob output = BLOB_INIT;
-  const char *infn;
-  int opt, r, pretty = 0;
-  UNUSED(L);
+  const char *infn, *outfn;
+  int r, pretty = 0;
 
-  /* jot markdown [-p pretty] [file] */
-  while ((opt = cmdargs_getopt(args, "p:qv")) >= 0) {
-    switch (opt) {
-      case 'p': pretty = atoi(args->optarg); break;
-      case 'q': verbosity = 0; break;
-      case 'v': verbosity += 1; break;
-      default:
-        return usage("invalid option: -%c", args->optopt);
-    }
-  }
+  runcode(L, 1, 4,
+    "local args = ...\n"
+    "if type(args) ~= 'table' then args = {} end\n"
+    "local infn = args[1]\n"
+    "local outfn = args['o']\n"
+    "local pretty = args['p'] or '0'\n"
+    "local extra = #args > 1 and true or false\n"
+    "return infn, outfn, pretty");
 
-  set_log_level(verbosity);
-
-  infn = cmdargs_getarg(args);
-  if (cmdargs_getarg(args))
+  infn = lua_tostring(L, -4);
+  outfn = lua_tostring(L, -3);
+  pretty = atoi(luaL_checkstring(L, -2));
+  if (lua_toboolean(L, -1))
     return usage("markdown: too many arguments");
 
   r = readfile(infn, &input);
   if (r != SUCCESS) goto done;
   if (!infn) infn = "(stdin)";
 
+  log_trace("calling mkdnhtml()");
   mkdnhtml(&output, blob_str(&input), blob_len(&input), 0, pretty);
 
-  fputs(blob_str(&output), stdout);
-  fflush(stdout);
+  r = writefile(outfn, blob_str(&output));
 
 done:
   blob_free(&input);
@@ -532,30 +584,29 @@ done:
 }
 
 
+/** jot pikchr [-o outfile] [-p pretty] [file] */
 static int
-render_pikchr(lua_State *L, struct cmdargs *args)
+dopikchr(lua_State *L)
 {
-  const char *infn, *pik, *svg;
+  const char *infn, *outfn, *pik, *svg;
   const char *class = "pikchr";
   Blob input = BLOB_INIT;
-  int opt, r, w, h, pretty = 0;
+  int r, w, h, pretty = 0;
   unsigned flags;
-  UNUSED(L);
 
-  while ((opt = cmdargs_getopt(args, "p:qv")) >= 0) {
-    switch (opt) {
-      case 'p': pretty = atoi(args->optarg); break;
-      case 'q': verbosity = 0; break;
-      case 'v': verbosity += 1; break;
-      default:
-        return usage("invalid option -%c", args->optopt);
-    }
-  }
+  runcode(L, 1, 4,
+    "local args = ...\n"
+    "if type(args) ~= 'table' then args = {} end\n"
+    "local infn = args[1]\n"
+    "local outfn = args['o']\n"
+    "local pretty = args['p'] or '0'\n"
+    "local extra = #args > 1 and true or false\n"
+    "return infn, outfn, pretty, extra");
 
-  set_log_level(verbosity);
-
-  infn = cmdargs_getarg(args);
-  if (cmdargs_getarg(args))
+  infn = lua_tostring(L, -4);
+  outfn = lua_tostring(L, -3);
+  pretty = atoi(luaL_checkstring(L, -2));
+  if (lua_toboolean(L, -1))
     return usage("pikchr: too many arguments");
 
   r = readfile(infn, &input);
@@ -566,13 +617,13 @@ render_pikchr(lua_State *L, struct cmdargs *args)
   if (pretty & 1) flags |= PIKCHR_DARK_MODE;
 
   pik = blob_str(&input);
+  log_trace("calling pikchr()");
   svg = pikchr(pik, class, flags, &w, &h);
 
   if (svg) {
     if (w >= 0) {
       log_debug("pikchr: w=%d h=%d", w, h);
-      fputs(svg, stdout);
-      fflush(stdout);
+      r = writefile(outfn, svg);
     }
     else {
       log_error("pikchr error in %s:\n%s", infn, svg);
@@ -592,83 +643,102 @@ done:
 }
 
 
+/** jot checks */
 static int
-checks(lua_State *L, struct cmdargs *args)
+dochecks(lua_State *L)
 {
-  int opt;
-  verbosity += 1;
-  while ((opt = cmdargs_getopt(args, "qv")) >= 0) {
-    switch (opt) {
-      case 'q': verbosity = 0; break;
-      case 'v': verbosity += 1; break;
-      default:
-        return usage("invalid option -%c", args->optopt);
-    }
-  }
-  set_log_level(verbosity);
-  return exitcode(runfile(L, "checks"));
+  runfile(L, "checks", 1, 0);
+  return 0;
+}
+
+
+/** jot trials */
+static int
+dotrials(lua_State *L)
+{
+  runfile(L, "trials", 1, 0);
+  return 0;
 }
 
 
 static int
-trials(lua_State *L, struct cmdargs *args)
+docmd(
+  lua_State *L, const char *cmd, int (*fun)(lua_State*),
+  struct cmdargs *args, const char *optspec)
 {
-  int opt;
-  verbosity += 1;
-  while ((opt = cmdargs_getopt(args, "qv")) >= 0) {
+  const char *arg;
+  int opt, index, r;
+
+  /* process args into a mixed table like this:
+     { cmd, arg1, ..., ["opt"] = optarg, ... } */
+
+  lua_newtable(L);
+
+  index = 0;
+  lua_pushstring(L, cmd);
+  lua_rawseti(L, -2, index++);
+
+  while ((opt = cmdargs_getopt(args, optspec)) >= 0) {
     switch (opt) {
+      case 'h': return help(cmd);
       case 'q': verbosity = 0; break;
       case 'v': verbosity += 1; break;
+      case ':': return usage("option -%c requires an argument", args->optopt);
+      case '?': return usage("invalid option -%c", args->optopt);
       default:
-        return usage("invalid option -%c", args->optopt);
+        lua_pushfstring(L, "%c", args->optopt);  /* key */
+        lua_pushstring(L, args->optarg);  /* value (may be null) */
+        lua_rawset(L, -3);
     }
   }
+
+  while ((arg = cmdargs_getarg(args))) {
+    lua_pushstring(L, arg);
+    lua_rawseti(L, -2, index++);
+  }
+
   set_log_level(verbosity);
-  return exitcode(runfile(L, "trials"));
+
+  log_debug("doing pcall(%s)", cmd);
+  lua_pushcfunction(L, msghandler);
+  lua_pushcfunction(L, fun);
+  lua_rotate(L, -3, 2);  /* reorder to msgh-fun-argtab */
+  r = lua_pcall(L, 1, 0, -3);
+  log_trace("pcall(%s) returned %d", cmd, r);
+
+  return exitcode(r);
 }
 
 
-int
+PUBLIC int
 main(int argc, char **argv)
 {
   struct cmdargs args;
   const char *cmd;
-  int opt, r = SUCCESS;
+  int opt, s = SUCCESS;
   char exepath[1024];
 
   cmdargs_init(&args, argc, argv);
   me = cmdargs_getprog(&args);
   if (!me) return FAILHARD;
 
-  /* Parse general options */
-
+  /* parse general options */
   while ((opt = cmdargs_getopt(&args, "c:do:s:t:hqvVx")) >= 0) {
     switch (opt) {
-      case 'h':
-        return usage(0);
-      case 'q':
-        verbosity = 0;
-        break;
-      case 'v':
-        verbosity += 1;
-        break;
-      case 'V':
-        return identify();
-      case ':':
-        return usage("option -%c requires an argument", args.optopt);
-      case '?':
-        return usage("invalid option: -%c", args.optopt);
-      default:
-        fprintf(stderr, "%s: not yet implemented: -%c\n", me, args.optopt);
-        return FAILSOFT;
+      case 'h': return usage(0);
+      case 'q': verbosity = 0; break;
+      case 'v': verbosity += 1; break;
+      case 'V': return identify();
+      case ':': return usage("option -%c requires an argument", args.optopt);
+      case '?': return usage("invalid option: -%c", args.optopt);
+      default:  return usage("option -%c is not yet implemented", args.optopt);
     }
   }
 
+  /* command is a required argument */
   cmd = cmdargs_getarg(&args);
-  if (!cmd) {
-    usage("no command specified");
-    return FAILHARD;
-  }
+  if (!cmd)
+    return usage("no command specified");
 
   if (!get_exe_path(exepath, sizeof(exepath))) {
     if (errno)
@@ -689,42 +759,43 @@ main(int argc, char **argv)
     return FAILSOFT;
   }
 
-  r = setup_lua(L, exepath);
-  if (r) goto cleanup;
+  s = setup_lua(L, exepath);
+  if (s) goto cleanup;
 
   if (streq(cmd, "new")) {
     log_error("command not yet implemented: %s", cmd);
-    r = FAILSOFT;
-  }
-  else if (streq(cmd, "render")) {
-    r = render(L, &args);
+    s = FAILSOFT;
   }
   else if (streq(cmd, "build")) {
     log_error("command not yet implemented: %s", cmd);
-    r = FAILSOFT;
+    s = FAILSOFT;
+  }
+  else if (streq(cmd, "render")) {
+    // TODO s = docmd(L, cmd, render, &args, "l:p:o:hqv");
+    s = render(L, &args);
   }
   else if (streq(cmd, "markdown") || streq(cmd, "mkdn")) {
-    r = render_markdown(L, &args);
+    s = docmd(L, cmd, domarkdown, &args, "o:p:hqv");
   }
   else if (streq(cmd, "pikchr")) {
-    r = render_pikchr(L, &args);
+    s = docmd(L, cmd, dopikchr, &args, "o:p:hqv");
   }
   else if (streq(cmd, "help")) {
-    r = usage(0);
+    s = help(0);
   }
   else if (streq(cmd, "check") || streq(cmd, "checks")) {
-    r = checks(L, &args);
+    s = docmd(L, cmd, dochecks, &args, "hqv");
   }
   else if (streq(cmd, "trial") || streq(cmd, "trials")) {
-    r = trials(L, &args);
+    s = docmd(L, cmd, dotrials, &args, "hqv");
   }
   else {
-    r = usage("invalid command: %s", cmd);
+    s = usage("invalid command: %s", cmd);
   }
 
 cleanup:
   log_trace("closing Lua state");
   lua_close(L);
 
-  return r;
+  return s;
 }
