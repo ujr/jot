@@ -27,7 +27,7 @@ static void (*nomem)(void) = 0;
 /* register new handler, return old handler */
 void (*blob_nomem(void (*handler)(void)))(void)
 {
-  void *old = nomem;
+  void (*old)(void) = nomem;
   nomem = handler;
   return old;
 }
@@ -86,7 +86,7 @@ blob_addvfmt(Blob *bp, const char *fmt, va_list ap)
      includes the terminating \0, whereas its return value does not. */
 
   va_copy(aq, ap); /* C99 */
-  chars = vsnprintf(bp->buf + bp->len, 0, fmt, aq);
+  chars = vsnprintf(bp->buf + bp->len, 0, fmt, aq); /* C99 */
   va_end(aq);
 
   if (chars < 0) return;

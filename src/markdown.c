@@ -1429,7 +1429,7 @@ parse_inlines(Blob *out, const char *text, size_t size, Parser *parser)
 
   free_delims(&delims);
 
-  //dump_spans(tree.root, 0);
+  /*dump_spans(tree.root, 0);*/
   emit_spans(out, text, tree.root, parser);
 
   freespans(&tree);

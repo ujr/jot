@@ -23,7 +23,7 @@ struct markdown {
   void (*listitem)(Blob *out, int tightstart, int tightend, Blob *text, void *udata);
   void (*hrule)(Blob *out, void *udata);
   void (*htmlblock)(Blob *out, Blob *text, void *udata);
-  // TOOD table/row/cell
+  /* TOOD table/row/cell */
 
   /* span callbacks */
   bool (*emphasis)(Blob *out, char c, int n, Blob *text, void *udata);

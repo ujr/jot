@@ -1,7 +1,7 @@
 .POSIX:
 
 CC      = gcc
-CFLAGS  = -std=c99 -Wall -Wextra -Og -g -I../lib/lua54
+CFLAGS  = -std=c99 -Wall -Wextra -pedantic -Og -g -I../lib/lua54
 LDFLAGS = -L../lib/lua54
 LDLIBS  = -llua -lm -ldl
 
@@ -17,10 +17,10 @@ jot: $(JOTSRC) $(JOTINC)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(JOTSRC) $(LDLIBS)
 
 pikchr: pikchr.c
-	$(CC) -DPIKCHR_SHELL -o $@ $? -lm
+	$(CC) $(CFLAGS) -DPIKCHR_SHELL -o $@ $? -lm
 
 mkdn: markdown.h markdown.c mkdnhtml.c
-	$(CC) -Wall -Wextra -O0 -g -o $@ -DMKDN_SHELL markdown.c mkdnhtml.c blob.c utils.c memory.c log.c pikchr.c -lm
+	$(CC) $(CFLAGS) -o $@ -DMKDN_SHELL markdown.c mkdnhtml.c blob.c utils.c memory.c log.c pikchr.c -lm
 
 clean:
 	rm -f *.o jot mkdn pikchr

@@ -107,9 +107,10 @@ cmdargs_getopt(struct cmdargs *args, const char *optspec)
 const char *
 cmdargs_getarg(struct cmdargs *args)
 {
+  const char *arg;
   assert(args != NULL);
-  const char *arg = args->argv[args->optind];
   args->optpos = 1;
+  arg = args->argv[args->optind];
   if (arg) args->optind += 1;
   return arg;
 }

@@ -222,7 +222,7 @@ f_normpath(lua_State *L)
 {
   luaL_Buffer b;
   const char *path;
-  size_t len, idx;
+  size_t len, idx, base;
   int stk, i;
   const char sep = M.dirsep;
 
@@ -242,7 +242,7 @@ f_normpath(lua_State *L)
   lua_newtable(L);
   for (stk=0, idx=0; idx < len;) {
     while (idx < len && path[idx] == sep) ++idx;
-    size_t base = idx;
+    base = idx;
     while (idx < len && path[idx] != sep) ++idx;
     if (idx == base) break;
     if (strncmp(path+base, ".", idx-base) == 0)

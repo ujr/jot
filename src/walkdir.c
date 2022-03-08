@@ -27,7 +27,6 @@ struct wdir {
   dev_t dev;
   ino_t ino;
   size_t pathlen;
-  //int level;
 };
 
 

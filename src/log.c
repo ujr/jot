@@ -132,14 +132,15 @@ log_level_name(int level)
 int
 log_add_writer(log_WriteFn fn, void *userdata, int level)
 {
+  int i;
   assert(fn != NULL);
-  for (int i = 0; i < MAX_WRITERS; i++) {
-    if (!Log.writers[i].fn) { // free slot
+  for (i = 0; i < MAX_WRITERS; i++) {
+    if (!Log.writers[i].fn) {  /* free slot */
       Log.writers[i] = (Writer) { fn, userdata, level };
       return 0;
     }
   }
-  return -1; // table full
+  return -1;  /* table full */
 }
 
 
@@ -154,6 +155,7 @@ log_add_stream(FILE *fp, int level)
 void
 log_log(int level, const char *file, int line, const char *fmt, ...)
 {
+  int i;
   log_Event evt = {
     .level = level, .fmt = fmt, .file = file, .line = line
   };
@@ -168,7 +170,7 @@ log_log(int level, const char *file, int line, const char *fmt, ...)
     va_end(evt.ap);
   }
 
-  for (int i = 0; i < MAX_WRITERS; i++) {
+  for (i = 0; i < MAX_WRITERS; i++) {
     Writer *writer = &Log.writers[i];
     if (!writer->fn) break;
     if (level >= writer->threshold) {
