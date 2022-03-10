@@ -108,6 +108,7 @@ failed(lua_State *L, const char *fmt, ...)
 }
 
 
+/** fs.getcwd(): path */
 static int
 fs_getcwd(lua_State *L)
 {
@@ -135,6 +136,7 @@ fs_getcwd(lua_State *L)
 }
 
 
+/** fs.mkdir(path): true | nil errmsg */
 static int
 fs_mkdir(lua_State *L)
 {
@@ -149,6 +151,7 @@ fs_mkdir(lua_State *L)
 }
 
 
+/** fs.rmdir(path): true | nil errmsg */
 static int
 fs_rmdir(lua_State *L)
 {
@@ -162,6 +165,7 @@ fs_rmdir(lua_State *L)
 }
 
 
+/** fs.listdir(path): table | nil errmsg */
 static int
 fs_listdir(lua_State *L)
 {
@@ -187,15 +191,16 @@ fs_listdir(lua_State *L)
   }
 
   if (errno) {
-    lua_pop(L, 1); /* the table */
+    lua_pop(L, 1);  /* the table */
     return failed(L, "listdir %s: %s", path, strerror(errno));
   }
 
   closedir(dp);
-  return 1; /* the table */
+  return 1;  /* the table */
 }
 
 
+/** fs.touch(path): true | nil errmsg */
 static int
 fs_touch(lua_State *L)
 {
@@ -211,6 +216,7 @@ fs_touch(lua_State *L)
 }
 
 
+/** fs.remove(path): true | nil errmsg */
 static int
 fs_remove(lua_State *L) {
   const char *path = luaL_checkstring(L, 1);
@@ -222,6 +228,7 @@ fs_remove(lua_State *L) {
 }
 
 
+/** fs.rename(old, new): true | nil errmsg */
 static int
 fs_rename(lua_State *L) {
   const char *oldname = luaL_checkstring(L, 1);
@@ -234,6 +241,7 @@ fs_rename(lua_State *L) {
 }
 
 
+/** fs.exists(path, type=any): true|false */
 static int
 fs_exists(lua_State *L)
 {
@@ -263,6 +271,7 @@ fs_exists(lua_State *L)
 }
 
 
+/** fs.getinfo(path, table=nil): table (type, size, mtime) */
 static int
 fs_getinfo(lua_State *L)
 {
@@ -309,6 +318,7 @@ randlets(char *buf, size_t len)
 }
 
 
+/** fs.tempdir(template): path | nil errmsg */
 static int
 fs_tempdir(lua_State *L)
 {
@@ -400,6 +410,7 @@ fs_walkdir_iter(lua_State *L)
 
 #define JOTLIB_WALKDIR_REGKEY "jotlib.walkdir"
 
+/** fs.walkdir(path, flags): iterator */
 static int
 fs_walkdir(lua_State *L)
 {
@@ -422,7 +433,7 @@ fs_walkdir(lua_State *L)
 }
 
 
-/* Lua function: glob(table, pat...): table | nil errmsg */
+/* fs.glob(table, pat...): table | nil errmsg */
 static int
 fs_glob(lua_State *L)
 {
@@ -479,6 +490,111 @@ fs_glob(lua_State *L)
 
 
 static int
+jot_split_iter(lua_State *L)
+{
+  const char *t, *sep;
+  size_t tlen, seplen;
+  int drop, trim;
+  size_t index;
+  int max, count;
+
+  t = luaL_checklstring(L, lua_upvalueindex(1), &tlen);
+  sep = luaL_checklstring(L, lua_upvalueindex(2), &seplen);
+  drop = lua_toboolean(L, lua_upvalueindex(3));
+  trim = lua_toboolean(L, lua_upvalueindex(4));
+  max = lua_tointeger(L, lua_upvalueindex(5));
+  index = luaL_checkinteger(L, lua_upvalueindex(6));
+  count = luaL_checkinteger(L, lua_upvalueindex(7));
+
+  while (index < tlen) {
+    size_t end;
+    const char *p = strstr(t+index, sep);
+    end = p ? (size_t)(p-t) : tlen;
+
+    if (max > 0 && ++count >= max) {
+      lua_pushinteger(L, tlen);
+      lua_replace(L, lua_upvalueindex(6));  /* update index */
+      lua_pushlstring(L, t+index, tlen-index);
+      return 1;
+    }
+
+    if (trim) {
+      while (index < end && isSpace(t[index])) index++;
+      while (end > index+1 && isSpace(t[end-1])) end--;
+    }
+
+    if (drop && index == end) {
+      index = (p-t)+seplen;
+      continue;
+    }
+
+    lua_pushinteger(L, (p-t)+seplen);
+    lua_replace(L, lua_upvalueindex(6));  /* update index */
+
+    lua_pushinteger(L, count);
+    lua_replace(L, lua_upvalueindex(7));  /* update count */
+
+    lua_pushlstring(L, t+index, end-index);
+    return 1;
+  }
+
+  return 0;  /* no more parts */
+}
+
+
+/** jot.split(s, sep, opts): iterator */
+static int
+jot_split(lua_State *L)
+{
+  const char *sep;
+  int drop, trim, max;
+  int arg, nargs;
+
+  luaL_checkstring(L, 1);
+  sep = luaL_checkstring(L, 2);
+  if (!*sep)
+    return luaL_argerror(L, 2, "separator must not be empty");
+
+  nargs = lua_gettop(L);
+  drop = trim = false;
+  max = -1;
+
+  for (arg = 3; arg <= nargs; arg++) {
+    if (lua_isinteger(L, arg) && max < 0) {
+      max = lua_tointeger(L, arg);
+      if (max < 0) max = 0;
+      continue;
+    }
+    if (lua_isstring(L, arg)) {
+      const char *opt = lua_tostring(L, arg);
+      if (streq(opt, "trim")) trim = true;
+      else if (streq(opt, "notrim")) trim = false;
+      else if (streq(opt, "drop") || streq(opt, "dropempty")) drop = true;
+      else if (streq(opt, "nodrop") || streq(opt, "nodropempty")) drop = false;
+      else return luaL_argerror(L, arg, "expect 'dropempty' or 'trim'");
+    }
+    else return luaL_argerror(L, arg, "expect 'dropempty' or 'trim' or max (integer)");
+  }
+
+  log_trace("split: drop=%s, trim=%s, max=%d",
+    drop ? "true" : "false", trim ? "true" : "false", max);
+
+  luaL_checkstack(L, 7, "cannot push 7 args in split()");
+
+  lua_pushvalue(L, 1);
+  lua_pushvalue(L, 2);
+  lua_pushboolean(L, drop);
+  lua_pushboolean(L, trim);
+  lua_pushinteger(L, max);
+  lua_pushinteger(L, 0);  /* index into string */
+  lua_pushinteger(L, 0);  /* count against max */
+  lua_pushcclosure(L, jot_split_iter, 7);
+  return 1;
+}
+
+
+/** jot.getenv(name): string */
+static int
 jot_getenv(lua_State *L)
 {
   const char *name = luaL_checkstring(L, 1);
@@ -488,7 +604,7 @@ jot_getenv(lua_State *L)
 }
 
 
-/* Lua function: pikchr(str) */
+/** jot.pikchr(str): string wd ht | nil errmsg */
 static int
 jot_pikchr(lua_State *L)
 {
@@ -503,6 +619,7 @@ jot_pikchr(lua_State *L)
   flags = PIKCHR_PLAINTEXT_ERRORS;
   if (darkmode) flags |= PIKCHR_DARK_MODE;
 
+  log_trace("calling pikchr()");
   t = pikchr(s, class, flags, &w, &h);
 
   if (!t) {
@@ -525,7 +642,7 @@ jot_pikchr(lua_State *L)
 }
 
 
-/* Lua function: markdown(str) */
+/** jot.markdown(str): string */
 static int
 jot_markdown(lua_State *L)
 {
@@ -537,6 +654,7 @@ jot_markdown(lua_State *L)
 
   s = luaL_checklstring(L, 1, &len);
   pretty = luaL_optinteger(L, 2, 0);
+  log_trace("calling mkdnhtml()");
   mkdnhtml(pout, s, len, 0, pretty);
 
   s = blob_str(pout);
@@ -547,6 +665,7 @@ jot_markdown(lua_State *L)
 }
 
 
+/** jot.checkblob(boolean): true | nil errmsg */
 static int
 jot_checkblob(lua_State *L)
 {
@@ -593,10 +712,11 @@ static const struct luaL_Reg fslib[] = {
 
 
 static const struct luaL_Reg jotlib[] = {
-  {"getenv",    jot_getenv},
-  {"pikchr",    jot_pikchr},
-  {"markdown",  jot_markdown},
-  {"checkblob", jot_checkblob},
+  {"split",     jot_split     },
+  {"getenv",    jot_getenv    },
+  {"pikchr",    jot_pikchr    },
+  {"markdown",  jot_markdown  },
+  {"checkblob", jot_checkblob },
   {0, 0}
 };
 

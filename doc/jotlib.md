@@ -57,6 +57,7 @@ path.join(...)       --combine args into a path (string)
 path.join(table)     --combine table entries into a path
 path.norm(path)      --resolve . and .. and // in path
 path.match(pat,path) --wildcard path matching (return boolean)
+path.config()        --returns DIRSEP and PATHSEP
 ```
 
 The **norm** function does path normalization by resolving
@@ -143,3 +144,18 @@ to the given table, and the given table is also the return
 value on success. On failure, return `nil` and a message.
 (Implemented on top of `path.match()` and `fs.walkdir()`,
 which was conveninent but probably not the most efficient.)
+
+## Miscellaneous
+
+``` Lua
+jot.split(s, sep)   -- iterator over parts of string
+jot.getenv(name)    -- return value of named env var
+jot.checkblob()     -- run blob self checks
+```
+
+The **split** function has up to three optional arguments:
+`'trim'` trims each part, `'drop'` drops empty parts (after
+trimming, if requested), and an integer `max` that gives
+the max number of parts to yield: after yielding max-1 parts,
+the remainder of the input string is yielded unchanged;
+dropped parts also count against max.

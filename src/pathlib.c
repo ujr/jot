@@ -14,7 +14,7 @@
 #define PATHSEP  ';'
 #else
 #define DIRSEP   '/'
-#define PATHSEP  ':'
+#define PATHSEP  ';'   /* usually ':' on Unix, here we prefer ';' */
 #endif
 
 

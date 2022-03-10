@@ -21,6 +21,10 @@ log.panic("sample panic msg from Lua")
 
 --error("oopsy")
 
+for s in jot.split("foo,  bar  , ,baz,bazaar,,,x", ",", "trim", "dropempty", 3, "notrim", 'trim') do
+  print("!"..s.."!")
+end
+
 local t = fs.glob({"foo", "bar"}, "../src/**/", "../**/*.md", "jot.h")
 for i, p in ipairs(t) do
   print(p)
