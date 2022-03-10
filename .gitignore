@@ -1,5 +1,6 @@
 *.o
 *.a
+*.so
 jot
 lib/**/lua
 lib/**/luac
