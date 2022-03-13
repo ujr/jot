@@ -83,6 +83,16 @@ f = function() i = i + 1 end
 except that the former looks for `i` in the global environment,
 the latter in the local environment (and is much faster).
 
+Loop variables of the *generic for* are implicitly local, good.
+In the example below, *dir* assumes its prior value after the
+loop is done:
+
+``` Lua
+dir = "foo"
+for dir in path.parts("a/b/c") do print(dir) end
+print(dir) -- prints "foo"
+```
+
 
 ## Directory Structure
 
@@ -106,7 +116,7 @@ the latter in the local environment (and is much faster).
 
 - content/\*.md    markdown | mustache
 - content/\*.\*    mustache
-- partials/\*      mustache
+  - partials/\*    mustache
 - static/\*        verbatim
 
 
@@ -114,7 +124,7 @@ the latter in the local environment (and is much faster).
 
 - Initialize (defaults, args)
 - Load `config.jot`   (args override config)
-- Load `init/\*.lua`  (additional functionality)
+- Load `init/\*.lua`  (setup pipelines, load partials, set defaults)
 - Load `data/\*`      (optional, avaliable in `site.data.*`)
 - Scan `content/**`   (available in `site.content.section.*`)
 - Scan `drafts/**`    (optional, merged with content)

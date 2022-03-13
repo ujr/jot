@@ -52,10 +52,11 @@ log.panic(msg)
 ```Lua
 path.basename(path)  --get filename part of path
 path.dirname(path)   --get directory part of path
-path.split(path)     --iterator over all path components
+path.parts(path)     --iterator over all path components
 path.join(...)       --combine args into a path (string)
 path.join(table)     --combine table entries into a path
 path.norm(path)      --resolve . and .. and // in path
+path.split(paths)    --iterator over PATHSEP separated paths
 path.match(pat,path) --wildcard path matching (return boolean)
 path.config()        --returns DIRSEP and PATHSEP
 ```
@@ -63,6 +64,11 @@ path.config()        --returns DIRSEP and PATHSEP
 The **norm** function does path normalization by resolving
 any `.` and `..` in the path, and reducing sequences of
 directory separators into just one.
+
+The **split** function returns an iterator over each path in
+the argument string of paths separated by PATHSEP (usually `;`
+but may be changed by **config**). The analog of the typical
+string.split functions but with a pre-configured separator.
 
 The **match** function knows about the wildcards `?`, `[...]`,
 `*` and `**`. The first three are standard, but note that they

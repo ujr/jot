@@ -55,6 +55,8 @@ f_basename(lua_State *L)
     }
   }
 
+  // TODO option to cut extension? any? given?
+
   lua_pushstring(L, path);
   return 1;
 }
@@ -84,7 +86,7 @@ f_dirname(lua_State *L)
 
 
 static int
-splitpath_iter(lua_State *L)
+getparts_iter(lua_State *L)
 {
   const char *path;
   size_t len, index, scout;
@@ -119,13 +121,15 @@ splitpath_iter(lua_State *L)
   return 0; /* no more parts */
 }
 
+
+/** path.parts(path): iterator */
 static int
-f_splitpath(lua_State *L)
+f_getparts(lua_State *L)
 {
   const char *path = luaL_checkstring(L, 1);
   lua_pushstring(L, path);
   lua_pushinteger(L, 0);
-  lua_pushcclosure(L, splitpath_iter, 2);
+  lua_pushcclosure(L, getparts_iter, 2);
   return 1;
 }
 
@@ -287,14 +291,61 @@ f_matchpath(lua_State *L)
 }
 
 
+static int
+split_iter(lua_State *L) {
+  const char *paths, *p;
+  size_t start, len, index;
+  paths = luaL_checklstring(L, lua_upvalueindex(1), &len);
+  start = luaL_checkinteger(L, lua_upvalueindex(2));
+
+  while (start < len) {
+    p = strchr(paths+start, M.pathsep);
+    index = p ? (size_t)(p-paths) : len;
+    if (index > start) {
+      lua_pushinteger(L, index+1);
+      lua_replace(L, lua_upvalueindex(2));
+      lua_pushlstring(L, paths+start, index-start);
+      return 1;
+    }
+    /* skip empty entry */
+    start = index+1;
+  }
+
+  return 0;  /* exhausted */
+}
+
+
+/** path.split(paths): iterator */
+static int
+f_split(lua_State *L)
+{
+  const char *paths = luaL_checkstring(L, 1);
+  lua_pushstring(L, paths);
+  lua_pushinteger(L, 0);  /* start */
+  lua_pushcclosure(L, split_iter, 2);
+  return 1;
+}
+
+
+static int
+error_readonly(lua_State *L)
+{
+  lua_pushstring(L, "cannot update readonly table");
+  return lua_error(L);
+}
+
+
 static const struct luaL_Reg pathlib[] = {
   {"config",   f_config    },
   {"basename", f_basename  },
   {"dirname",  f_dirname   },
-  {"split",    f_splitpath },
+  {"parts",    f_getparts  },
   {"join",     f_joinpath  },
   {"norm",     f_normpath  },
   {"match",    f_matchpath },
+  {"split",    f_split     },
+// TODO path.common(...) ?
+// TODO path.cutext(path) ?
   {0, 0}
 };
 
@@ -305,6 +356,12 @@ luaopen_pathlib(lua_State *L)
   M.dirsep = DIRSEP;
   M.pathsep = PATHSEP;
 
+  lua_createtable(L, 0, 0);  /* proxy table */
+  lua_createtable(L, 0, 2);  /* meta table */
   luaL_newlib(L, pathlib);
+  lua_setfield(L, -2, "__index");
+  lua_pushcfunction(L, error_readonly);
+  lua_setfield(L, -2, "__newindex");
+  lua_setmetatable(L, -2);
   return 1;
 }
