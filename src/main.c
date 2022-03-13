@@ -5,6 +5,7 @@
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -18,9 +19,9 @@
 #include "pikchr.h"
 #include "markdown.h"
 
-static void fatal(void);
-#define BUF_ABORT fatal();
-#include "buf.h"
+//static void fatal(void);
+//#define BUF_ABORT fatal();
+//#include "buf.h"
 
 #include "lua.h"
 #include "lauxlib.h"
@@ -31,6 +32,7 @@ static const char *me = "jot";
 static int verbosity = 2;  /* WARN and higher */
 
 
+#if 0
 static void
 fatal(void)
 {
@@ -40,6 +42,7 @@ fatal(void)
     log_panic("Fatal error: cannot continue");
   exit(FAILSOFT);
 }
+#endif
 
 
 static bool
@@ -103,7 +106,7 @@ usage(const char *fmt, ...)
     fprintf(fp, "\nCommands:\n"
     "  new <path>      create initial site structure in <path>\n"
     "  build [path]    build or rebuild site in path (or .)\n"
-    "  render [file]   render file (or stdin) to stdout\n"
+    "  render FILE     render FILE to stdout\n"
     "  markdown [file] process Markdown to HTML on stdout\n"
     "  pikchr [file]   process Pikchr to SVG on stdout\n"
     "  checks          run some self checks and quit\n"
@@ -255,23 +258,6 @@ setup_lua(lua_State *L, const char *exepath)
   // Shall be read-only for page templates!
 
   return SUCCESS;
-}
-
-
-static void
-loadargs(lua_State *L, struct cmdargs *args)
-{
-  const char *arg;
-  lua_Integer i;
-
-  /* expect table on top of stack */
-  luaL_checktype(L, -1, LUA_TTABLE);
-
-  /* set remaining args in table as 1, 2, ... */
-  for (i = 1; (arg = cmdargs_getarg(args)); i++) {
-    lua_pushstring(L, arg);
-    lua_rawseti(L, -2, i);
-  }
 }
 
 
@@ -448,103 +434,30 @@ writefile(const char *fn, const char *text)
 }
 
 
+/** jot render [-x] [-l luafiles] [-p partials] [-o outfile] [infile [args]] */
 static int
-render(lua_State *L, struct cmdargs *args)
+render(lua_State *L)
 {
-  const char *infn, *outfn = 0;
-  const char **initbuf = 0;
-  const char **partbuf = 0;
-  bool sandbox = true;
-  int opt, num, top, r;
+  // TODO setup default routing: addproc("**/*.md", markdown) addproc("**/*", verbatim)
 
-  /* jot render {-i luafile} {-p partial} [-o outfile] [file] [args] */
-  while ((opt = cmdargs_getopt(args, "i:o:p:qvx")) >= 0) {
-    switch (opt) {
-      case 'o': outfn = args->optarg; break;
-      case 'i': buf_push(initbuf, args->optarg); break;
-      case 'p': buf_push(partbuf, args->optarg); break;
-      case 'q': verbosity = 0; break;
-      case 'v': verbosity += 1; break;
-      case 'x': sandbox = false; break;
-      case ':':
-        return usage("option -%c requires an argument", args->optopt);
-      case '?':
-        return usage("invalid option: -%c", args->optopt);
-    }
-  }
+  runcode(L, 1, 5,
+    "local args = ...\n"
+    "if type(args) ~= 'table' then args = {} end\n"
+    "local infn = args[1]\n"
+    "if not infn then error('missing input file argument') end\n"
+    "local outfn = args['o']\n"
+    "local luafiles = args['l']\n"
+    "local partials = args['p']\n"
+    "local args = {table.unpack(args, 2)}\n"
+    "local f = require 'render'\n"
+    "f(infn, outfn, luafiles, partials, args)\n"
+    );
 
-  set_log_level(verbosity);
-
-  infn = cmdargs_getarg(args);
-  num = cmdargs_numleft(args);
-
-  lua_createtable(L, num, 0);
-  loadargs(L, args);
-  lua_setglobal(L, "ARGS");
-  // TODO expose through jot.args[]
-
-  if (sandbox) setup_sandbox(L);
-  else log_warn("sandbox disabled by option -x");
-
-  // TODO should do things from about here in Lua!
-
-  for (size_t i = 0; i < buf_size(initbuf); i++) {
-    const char *fn = initbuf[i];
-    log_debug("loading init file %s", fn);
-    if ((r = luaL_dofile(L, fn)) != LUA_OK) {
-      const char *err = lua_tostring(L, -1);
-      if (!err) err = "luaL_dofile() failed";
-      log_error("cannot load %s: %s", fn, err);
-      return exitcode(r);
-    }
-  }
-
-  top = lua_gettop(L);
-
-  // This glob partial loading would be easier with Lua;
-  // what is missing is glob() or fnmatch() and dirwalk().
-  glob_t globbuf;
-  globbuf.gl_offs = globbuf.gl_pathc = 0;
-  for (size_t i = 0; i < buf_size(partbuf); i++) {
-    const char *pat = partbuf[i];
-    int flags = GLOB_MARK;
-    if (i > 0) flags |= GLOB_APPEND;
-    glob(pat, flags, 0, &globbuf);
-  }
-
-  lua_newtable(L);
-  for (size_t i = 0; i < globbuf.gl_pathc; i++) {
-    log_trace("found partial: %s", globbuf.gl_pathv[i]);
-    lua_pushstring(L, globbuf.gl_pathv[i]);
-    lua_rawseti(L, -2, 1+i);
-  }
-
-  if (globbuf.gl_pathc > 0)
-    globfree(&globbuf);
-
-  buf_free(initbuf);
-  buf_free(partbuf);
-
-  lua_pushcfunction(L, msghandler);
-  lua_getglobal(L, "require");
-  lua_pushstring(L, "render");
-  r = lua_pcall(L, 1, 1, -3);
-  if (r != LUA_OK)
-    goto bail;
-  lua_pushstring(L, infn);
-  lua_pushstring(L, outfn);
-  // stack: outfn infn chunk msghandler table
-  lua_rotate(L, -5, -1); // pull partials table to top
-  r = lua_pcall(L, 3, 0, -5);
-
-bail:
-  dump_stack(L, "stk.");
-  lua_settop(L, top);
-  return exitcode(r);
+  return 0;
 }
 
 
-/** jot markdown [-o outfile] [-p pretty] [file] */
+/** jot markdown [-o outfile] [-p pretty] file [args] */
 static int
 domarkdown(lua_State *L)
 {
@@ -561,6 +474,27 @@ domarkdown(lua_State *L)
     "local pretty = args['p'] or '0'\n"
     "local extra = #args > 1 and true or false\n"
     "return infn, outfn, pretty");
+
+// TODO why not all of it in Lua?
+/*
+  local jot = require "jotlib"
+  local log = jot.log
+
+  if #args > 1 then error("markdown: too many arguments") end
+  pretty = math.tointeger(pretty) or 0
+
+  if infn and infn ~= "-" then
+    io.input(assert(io.open(infn, "r")))
+  end
+
+  if outfn and outfn ~= "-" then
+    io.output(assert(io.open(outfn, "w")))
+  end
+
+  local md = jot.markdown(io.read("a"), pretty)
+  io.write(md)
+  io.flush()
+*/
 
   infn = lua_tostring(L, -4);
   outfn = lua_tostring(L, -3);
@@ -668,6 +602,7 @@ docmd(
 {
   const char *arg;
   int opt, index, r;
+  bool sandbox = true;
 
   /* process args into a mixed table like this:
      { cmd, arg1, ..., ["opt"] = optarg, ... } */
@@ -685,6 +620,7 @@ docmd(
       case 'v': verbosity += 1; break;
       case ':': return usage("option -%c requires an argument", args->optopt);
       case '?': return usage("invalid option -%c", args->optopt);
+      case 'x': sandbox = false;  /* FALLTHRU */
       default:
         lua_pushfstring(L, "%c", args->optopt);  /* key */
         lua_pushstring(L, args->optarg);  /* value (may be null) */
@@ -698,6 +634,9 @@ docmd(
   }
 
   set_log_level(verbosity);
+
+  if (sandbox) setup_sandbox(L);
+  else log_warn("sandbox disabled by option -x");
 
   log_debug("doing pcall(%s)", cmd);
   lua_pushcfunction(L, msghandler);
@@ -771,8 +710,7 @@ main(int argc, char **argv)
     s = FAILSOFT;
   }
   else if (streq(cmd, "render")) {
-    // TODO s = docmd(L, cmd, render, &args, "l:p:o:hqv");
-    s = render(L, &args);
+    s = docmd(L, cmd, render, &args, "l:p:o:hqv");
   }
   else if (streq(cmd, "markdown") || streq(cmd, "mkdn")) {
     s = docmd(L, cmd, domarkdown, &args, "o:p:hqv");
