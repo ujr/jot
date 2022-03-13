@@ -129,6 +129,8 @@ assert(path.match("a/**/*/**/b", "a//b"))
 assert(not path.match("**/", "foo"))
 assert(path.match("**/", "bar/"))
 assert(path.match("**/", "bar/baz/"))
+assert(path.match("**/*.md", "./foo/bar.md"))
+assert(path.match("**/*.md", "../foo/bar.md"))
 
 
 log.info("Checking jot.split()")
