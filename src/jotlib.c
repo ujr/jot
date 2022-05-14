@@ -108,6 +108,58 @@ failed(lua_State *L, const char *fmt, ...)
 }
 
 
+/* fs.readfile(fn): string | nil errmsg errno */
+static int
+fs_readfile(lua_State *L)
+{
+  size_t r;
+  luaL_Buffer buf;
+  const char *fn = luaL_checkstring(L, 1);
+  FILE *fp = fopen(fn, "rb");
+  if (!fp)
+    return luaL_fileresult(L, 0, fn);
+  luaL_buffinit(L, &buf);
+  do {  /* read entire file in chunks */
+    char *p = luaL_prepbuffsize(&buf, LUAL_BUFFERSIZE);
+    r = fread(p, sizeof(char), LUAL_BUFFERSIZE, fp);
+    luaL_addsize(&buf, r);
+  } while (r == LUAL_BUFFERSIZE);
+  if (ferror(fp)) {
+    int n = luaL_fileresult(L, 0, fn);
+    fclose(fp);
+    return n;
+  }
+  fclose(fp);
+  luaL_pushresult(&buf);
+  return 1;
+}
+
+
+/* fs.writefile(fn, s...): true | nil errmsg errno */
+static int
+fs_writefile(lua_State *L)
+{
+  int ok = 1, arg, nargs = lua_gettop(L);
+  const char *fn = luaL_checkstring(L, 1);
+  FILE *fp = fopen(fn, "wb");
+  if (!fp)
+    return luaL_fileresult(L, 0, fn);
+  for (arg = 2; arg <= nargs; arg++) {
+    size_t len;
+    const char *s = lua_tolstring(L, arg, &len);
+    ok = ok && fwrite(s, sizeof(char), len, fp) == len;
+  }
+  if (ferror(fp)) {
+    int n = luaL_fileresult(L, 0, fn);
+    fclose(fp);
+    return n;
+  }
+  fclose(fp);
+  lua_pushboolean(L, 1);
+  return 1;
+}
+
+
 /** fs.getcwd(): path */
 static int
 fs_getcwd(lua_State *L)
@@ -695,18 +747,20 @@ getdirsep(lua_State *L)
 
 
 static const struct luaL_Reg fslib[] = {
-  {"getcwd",    fs_getcwd  },
-  {"mkdir",     fs_mkdir   },
-  {"rmdir",     fs_rmdir   },
-  {"touch",     fs_touch   },
-  {"rename",    fs_rename  },
-  {"remove",    fs_remove  },
-  {"exists",    fs_exists  },
-  {"getinfo",   fs_getinfo },
-  {"tempdir",   fs_tempdir },
-  {"listdir",   fs_listdir },
-  {"walkdir",   fs_walkdir },
-  {"glob",      fs_glob    },
+  {"getcwd",    fs_getcwd    },
+  {"mkdir",     fs_mkdir     },
+  {"rmdir",     fs_rmdir     },
+  {"touch",     fs_touch     },
+  {"rename",    fs_rename    },
+  {"remove",    fs_remove    },
+  {"exists",    fs_exists    },
+  {"getinfo",   fs_getinfo   },
+  {"tempdir",   fs_tempdir   },
+  {"listdir",   fs_listdir   },
+  {"walkdir",   fs_walkdir   },
+  {"glob",      fs_glob      },
+  {"readfile",  fs_readfile  },
+  {"writefile", fs_writefile },
   {0, 0}
 };
 

@@ -95,6 +95,8 @@ fs.getinfo(path, tab)   -- get info on file at path
 fs.walkdir(path, flags) -- file tree iterator (see below)
 fs.tempdir(template)    -- create temporary directory
 fs.glob(table, pat...)  -- find paths matching pat (see below)
+fs.readfile(fn)         -- read contents of file to string
+fs.writefile(fn, s...)  -- write strings to file (overwrite)
 ```
 
 The functions that modify the file system return `true` on
@@ -150,6 +152,11 @@ to the given table, and the given table is also the return
 value on success. On failure, return `nil` and a message.
 (Implemented on top of `path.match()` and `fs.walkdir()`,
 which was conveninent but probably not the most efficient.)
+
+The **readfile** and **writefile** functions are intended
+to read and write entire files at once. A convenience over
+using `io.open()`, `:read()`, `:write()`, and `:close()`.
+Note that **writefile** expects string arguments only.
 
 ## Miscellaneous
 
