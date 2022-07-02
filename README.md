@@ -27,6 +27,21 @@ A number of functions will be made available to Lua for
 internal implementation, some also for user scripting;
 see [jotlib.md](doc/jotlib.md) for details.
 
+## Specification
+
+Minimal requirements for this project:
+
+- include another file
+- definition (name = literal, better: name = expr)
+- expansion (short substitutions and block iterations)
+- unobtrusive syntax
+
+Should be fulfilled by the above features:
+Expansion and inclusion is handled by mustache, whose
+syntax is simple and easy for syntax highlighting.
+Definition may occur in frontmatter and separate init/code
+files and is thus nicely separated from content.
+
 ## Notes
 
 A jot (noun) is a small dot, from the greek letter iota,
@@ -34,6 +49,10 @@ which has no dot, but is often written as a very small
 dash below a vowel (the *iota subscriptum*).
 To jot something down is to quickly take notes, and
 the jotter is the notebook or scratch pad where you do it.
+
+Note that the features are hardly more than is provided by
+a simple macro processor like [m1](doc/m1.md), but jot is
+more convenient and tailored to static site generation.
 
 Lua is copyright © 1994–2021 Lua.org, PUC-Rio. MIT license.  
 Pikchr is copyright © 2020 by D. Richard Hipp. Zero-clause BSD license.  
